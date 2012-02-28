@@ -43,6 +43,7 @@ sub getConfirmation( $$ );
 sub processFormData( $$ );
 sub authorizedRequest( $$$@ );
 sub processJSONresponse( $$$ );
+sub apiMessageDisplay ( $$$ );
 
 # run it
 main;
@@ -121,7 +122,16 @@ sub getFormData( $$ ) {
 	    @domains = map( { $_->{domain} } @{$domains->{data}->{zone}} );
 	    @domains = keys( %{{ map { $_ => 1 } @domains }} );
 	    @forwardDomains = sort( grep( !/(in-addr|ip6)\.arpa/, @domains ));
-	    @inaddrDomains = sort( grep( /(in-addr|ip6)\.arpa/, @domains ));
+	    # this godawful sort does the Right Thing(tm)
+	    @inaddrDomains = sort {
+		my @a = $a =~ /(\d+)\.(\d+)\.(\d+)\.(in-addr\.arpa|ip6\.arpa)/;
+		my @b = $b =~ /(\d+)\.(\d+)\.(\d+)\.(in-addr\.arpa|ip6\.arpa)/;
+		    $a[2] <=> $b[2]
+		           ||
+		    $a[1] <=> $b[1]
+		           ||
+		    $a[0] <=> $b[0]
+	    } grep( /(in-addr|ip6)\.arpa/, @domains );
 
 	    # prepend placeholders for adding a new domain
 	    unshift( @forwardDomains, ( '', '-Add New-', ));
@@ -132,12 +142,12 @@ sub getFormData( $$ ) {
 	}
 
 	print
-	    $w->h1( 'Populate DNS Zone' ), "\n",
-	    $w->p( 'Use this form to populate a DNS zone for a reseller.', );
+	    $w->h1( 'Bulk DNS Addition' ), "\n",
+	    $w->p( 'Use this form to add a group of hosts and addresses to a DNS zone for a reseller.' );
 
 	print
 	    $w->start_form(
-		-name => 'init_zone',
+		-name => 'bulk_add',
 		-method => 'POST',
 		-action => '/cgi/addon_bulk-dns-add.cgi',
 	    ), "\n";
@@ -204,18 +214,18 @@ sub getFormData( $$ ) {
 	### in-addr.arpa (reverse) domains
 	print
 	    $w->table ({ -border => '0', id => 't1' },
-			$w->Tr({ -align => 'left' },
-				$w->th({ -align => 'right' }, 'Choose a reverse domain:&nbsp' ),
-				$w->td(
-				    $w->popup_menu(
-					-id => 'existing_reverse_domain',
-					-name => 'existing_reverse_domain',
-					-values => \@inaddrDomains,
-					-onChange => 'processDomain(this, "info_existing_reverse_domain", "reverse_domain", true)',
-				    ),
-				),
-				$w->td({ -id => 'info_existing_reverse_domain' }, '&nbsp;' ),
-			),
+		       $w->Tr({ -align => 'left' },
+			      $w->th({ -align => 'right' }, 'Choose a reverse domain:&nbsp' ),
+			      $w->td(
+				  $w->popup_menu(
+				      -id => 'existing_reverse_domain',
+				      -name => 'existing_reverse_domain',
+				      -values => \@inaddrDomains,
+				      -onChange => 'processDomain(this, "info_existing_reverse_domain", "reverse_domain", true)',
+				  ),
+			      ),
+			      $w->td({ -id => 'info_existing_reverse_domain' }, '&nbsp;' ),
+		       ),
 	    ), "\n";
 
 	# hide this <div> at first (style="display: none")
@@ -231,7 +241,7 @@ sub getFormData( $$ ) {
 						 -name => 'reverse_domain',
 						 -size => '32',
 						 -maxlength => '56',
-						 -onChange => 'validateHostName(this, "info_reverse_domain", true)'
+						 -onChange => 'validateReverseZone(this, "info_reverse_domain", true)'
 					     ),
 					 ),
 					 $w->td({ -id => 'info_reverse_domain' }, '&nbsp;' ),
@@ -255,18 +265,19 @@ sub getFormData( $$ ) {
 	#     ), "\n";
 
 	print
+	    $w->start_table ({ -border => '0' } ),
 	    $w->Tr({ -align => 'left' },
-		    $w->th({ -align => 'right' }, 'Fourth octet start:&nbsp;' ),
-		    $w->td(
-			$w->textfield(
-			    -id => 'ipv4start',
-			    -name => 'ipv4start',
-			    -size => 3,
-			    -maxlength => 3,
-			    -onchange  => 'validateNumericRange(this, "info_ipv4start", 1, 255, true)',
-			),
-		    ),
-		    $w->td({ -id => 'info_ipv4start' }, '&nbsp;' ),
+		   $w->th({ -align => 'right' }, 'Fourth octet start:&nbsp;' ),
+		   $w->td(
+		       $w->textfield(
+			   -id => 'ipv4start',
+			   -name => 'ipv4start',
+			   -size => 3,
+			   -maxlength => 3,
+			   -onchange  => 'validateNumericRange(this, "info_ipv4start", 1, 255, true)',
+		       ),
+		   ),
+		   $w->td({ -id => 'info_ipv4start' }, '&nbsp;' ),
 	    ), "\n";
 
 	print
@@ -367,17 +378,19 @@ sub getConfirmation( $$ ) {
 	my $owner = $w->param( 'owner' );
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
 	my $forward_domain = $w->param( 'forward_domain' );
-	my $ipv4network = $w->param( 'ipv4network' );
+	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
+	my $reverse_domain = $w->param( 'reverse_domain' );
 	my $ipv4start = $w->param( 'ipv4start' );
 	my $ipv4end = $w->param( 'ipv4end' );
 	my $hostname_base = $w->param( 'hostname_base' );
 	my $hostname_offset = $w->param( 'hostname_offset' );
 	my $verbose = $w->param( 'verbose' );
 
-	my $newZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
+	my $newForwardZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
+	my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
 	my @bind = ();
 
-	my $ipv4AddressStart = $ipv4network . '.' . $ipv4start;
+	my $ipv4network = undef;
 	my $addrCount = $ipv4start;
 	my $hostCount = $hostname_offset;
 
@@ -389,6 +402,13 @@ sub getConfirmation( $$ ) {
 	if ( $existing_forward_domain !~ /^-add new-/i ) {
 	    $forward_domain = $existing_forward_domain;
 	}
+	# they chose an existing reverse domain
+	if ( $existing_reverse_domain !~ /^-add new-/i ) {
+	    $reverse_domain = $existing_reverse_domain;
+	}
+
+	( $ipv4network = $reverse_domain ) =~ s/(\d+)\.(\d+)\.(\d+)\.in-addr\.arpa/$3.$2.$1/;
+
 
 	# make the list of IP addresses and hostnames
 	# save the full IP address, the domain, and the numbered hostname
@@ -408,10 +428,15 @@ sub getConfirmation( $$ ) {
 	}
 
 	# display the new records and await confirmation to proceed
-	if ( $newZone ) {
+	if ( $newForwardZone ) {
 	    print
-		$w->h1( { -style => 'color:red' },  'Adding new zone' ),
+		$w->h1( { -style => 'color:red' },  'Adding new forward zone' ),
 		$w->p( 'Domain: ', $w->i( $forward_domain )), "\n";
+	}
+	if ( $newReverseZone ) {
+	    print
+		$w->h1( { -style => 'color:red' },  'Adding new reverse zone' ),
+		$w->p( 'in-addr.arpa Domain: ', $w->i( $reverse_domain )), "\n";
 	}
 	print
 	    $w->start_div({ -id => 'zonerecords' , -style => 'display: block'} ), "\n",
@@ -453,11 +478,11 @@ sub getConfirmation( $$ ) {
 		), "\n";
 	}
 
-	print
-	    $w->submit(
-		-name => 'submit',
-		-label => 'Looks Good'
-	    ), "\n";
+	# print
+	#     $w->submit(
+	# 	-name => 'submit',
+	# 	-label => 'Looks Good'
+	#     ), "\n";
 
 	print $w->end_form(), "\n";
 
@@ -492,17 +517,19 @@ sub processFormData( $$ ) {
 	my $owner = $w->param( 'owner' );
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
 	my $forward_domain = $w->param( 'forward_domain' );
-	my $ipv4network = $w->param( 'ipv4network' );
+	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
+	my $reverse_domain = $w->param( 'reverse_domain' );
 	my $ipv4start = $w->param( 'ipv4start' );
 	my $ipv4end = $w->param( 'ipv4end' );
 	my $hostname_base = $w->param( 'hostname_base' );
 	my $hostname_offset = $w->param( 'hostname_offset' );
 	my $verbose = $w->param( 'verbose' );
 
-	my $newZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
+	my $newForwardZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
+	my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
 	my @bind = ();
 
-	my $ipv4AddressStart = $ipv4network . '.' . $ipv4start;
+	my $ipv4network = undef;
 	my $addrCount = $ipv4start;
 	my $hostCount = $hostname_offset;
 	my $response = undef;
@@ -513,6 +540,12 @@ sub processFormData( $$ ) {
 	if ( $existing_forward_domain !~ /^-add new-$/i ) {
 	    $forward_domain = $existing_forward_domain;
 	}
+	# they chose an existing reverse domain
+	if ( $existing_reverse_domain !~ /^-add new-/i ) {
+	    $reverse_domain = $existing_reverse_domain;
+	}
+
+	( $ipv4network = $reverse_domain ) =~ s/(\d+)\.(\d+)\.(\d+)\.in-addr\.arpa/$3.$2.$1/;
 
 	# make the list of IP addresses and hostnames
 	# save the full IP address, the domain, and the numbered hostname
@@ -530,17 +563,27 @@ sub processFormData( $$ ) {
 		);
 	}
 
-	# create a new zone
-	if ( $newZone ) {
+	# create a new forward zone
+	if ( $newForwardZone ) {
 	    $response = authorizedRequest( $w, $ua, 'adddns',
 					   (
 					    'domain=' . $forward_domain,
-					    'ip=' . $ipv4AddressStart,
+					    'ip=' . $ipv4network . '.' . $ipv4start,
 					    'trueowner=' . $owner
 					   ));
 	}
 
-	if ( ! $newZone || ( $newZone && $response->{metadata}->{result} == 1 )) {
+	# create a new reverse zone
+	if ( $newReverseZone ) {
+	    $response = authorizedRequest( $w, $ua, 'adddns',
+					   (
+					    'domain=' . $reverse_domain,
+					    'ip=' . $ipv4network . '.' . $ipv4start,
+					    'trueowner=' . $owner
+					   ));
+	}
+
+	if ( ! $newForwardZone || ( $newForwardZone && $response->{metadata}->{result} == 1 )) {
 
 	    # finally, send the boatload off to cPanel,
 	    # creating A records and PTR records for each hostname
@@ -569,23 +612,16 @@ sub processFormData( $$ ) {
 						    'type=PTR',
 						   );
 		    if ( $response->{metadata}->{result} != 1 ) {
-			print $w->p( 'ERROR: unable to add PTR record' ), "\n";
+			apiMessageDisplay( $w, $response, 'ERROR: unable to add PTR record' );
 			last;
 		    }
 		} else {
-		    print $w->p( 'ERROR: unable to add A record' ), "\n";
+		    apiMessageDisplay( $w, $response, 'ERROR: unable to add A record' );
 		    last;
 		}
 	    }
 	} else {
-
-	    print
-		$w->h1( 'ERROR adding zone for domain: ', $forward_domain ),
-		$w->p(
-		    'Result: ', $response->{metadata}->{result},
-		    $w->br(),
-		    'Reason: ', $response->{metadata}->{reason},
-		), "\n";
+	    apiMessageDisplay( $w, $response, 'ERROR adding zone for domain ' . $forward_domain );
 	}
     } else {
 
@@ -661,14 +697,7 @@ sub processJSONresponse( $$$ ) {
 	    }
 
 	    if ( $w->param('verbose') || $jsonRef->{metadata}->{result} != 1 ) {
-		print
-		    $w->p(
-			$completionMessage,
-			$w->br(),
-			'Result: ', $jsonRef->{metadata}->{result},
-			$w->br(),
-			'Reason: ', $jsonRef->{metadata}->{reason},
-		    );
+		apiMessageDisplay( $w, $response, $completionMessage );
 	    }
 	} else {
 	    print $w->p( 'ERROR: unable to decode JSON from ', $response ), "\n";
@@ -678,6 +707,26 @@ sub processJSONresponse( $$$ ) {
     }
 
     $jsonRef;
+}
+
+sub apiMessageDisplay ( $$$ ) {
+    my $w = shift;
+    my $response = shift;
+    my $message = shift;
+
+    print
+	$w->h1( $message ), "\n";
+
+    if ( $response ) {
+	print
+	    $w->p(
+		'Result: ', $response->{metadata}->{result},
+		$w->br(),
+		'Reason: ', $response->{metadata}->{reason},
+		$w->br(),
+		$response->{metadata}->{statusmsg},
+	    ), "\n";
+    }
 }
 
 =pod
@@ -926,6 +975,38 @@ function validateHostName (valfield,   // element to be validated
 
     if (tfld >= 200) {
 	msg (infofield, "error", "ERROR: name too long");
+	setfocus(valfield);
+	return false;
+    }
+
+    msg (infofield, "info", "");
+
+    return true;
+}
+
+// --------------------------------------------
+//             validateReverseZone
+// Validate an in-addr.arpa zone name
+// Returns true if OK
+// --------------------------------------------
+
+function validateReverseZone (valfield,   // element to be validated
+                                infofield,  // id of element to receive info/error msg
+                                required)   // true if required
+{
+    var stat = commonCheck (valfield, infofield, required);
+    if (stat != proceed) return stat;
+
+    var tfld = valfield.value.replace( /^\s+|\s+$/g, '' );
+
+    if (tfld >= 24) {
+	msg (infofield, "error", "ERROR: name length exceeds 24 characters");
+	setfocus(valfield);
+	return false;
+    }
+
+    if ( ! /^\d+\.\d+\.\d+\.in-addr\.arpa$/.test( tfld )) {
+	msg (infofield, "error", "ERROR: not a valid Reverse Zone name ([0-9]+.[0-9]+.[0-9]+.in-addr.arpa)");
 	setfocus(valfield);
 	return false;
     }
