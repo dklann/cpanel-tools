@@ -1,0 +1,12 @@
+*~
+*.pdf
+DOTssh/
+docs/
+x.html
+named.conf
+bind/
+clamav*
+hack*
+*.json
+*.tar.bz2
+*.tar.gz
