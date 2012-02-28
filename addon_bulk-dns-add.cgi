@@ -44,6 +44,7 @@ sub processFormData( $$ );
 sub authorizedRequest( $$$@ );
 sub processJSONresponse( $$$ );
 
+# run it
 main;
 
 1;
@@ -63,7 +64,7 @@ sub main() {
 	    -script => join( "", @javaScript ),
 	);
 
-    Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_init-zone.cgi' );
+    Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_bulk-dns-add.cgi' );
 
 
     if ( $w->param( 'affirmed' )) {
@@ -138,7 +139,7 @@ sub getFormData( $$ ) {
 	    $w->start_form(
 		-name => 'init_zone',
 		-method => 'POST',
-		-action => '/cgi/addon_init-zone.cgi',
+		-action => '/cgi/addon_bulk-dns-add.cgi',
 	    ), "\n";
 
 	print
@@ -433,7 +434,7 @@ sub getConfirmation( $$ ) {
 	    $w->start_form(
 		-name => 'commit_records',
 		-method => 'POST',
-		-action => '/cgi/addon_init-zone.cgi',
+		-action => '/cgi/addon_bulk-dns-add.cgi',
 	    ), "\n";
 	print
 	    $w->hidden(
@@ -683,7 +684,7 @@ sub processJSONresponse( $$$ ) {
 
 =head1 NAME
 
-addon_init-zone.cgi
+addon_bulk-dns-add.cgi
 
 =head1 SYNOPSIS
 
@@ -691,7 +692,7 @@ Add a new, or add records to an exising zone for cPanel BIND, automatically fill
 
 =head1 DESCRIPTION
 
-addon_init-zone.cgi presents a form to the user to enter zone details including a hostname "template", a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of creating the zone.
+addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template", a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of creating the zone.
 
 =head1 SEE ALSO
 
