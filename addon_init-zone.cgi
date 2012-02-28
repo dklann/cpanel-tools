@@ -3,10 +3,10 @@
 #ACLS:create-dns
 
 #      _|_|    _|                        _|                                                    
-#    _|    _|      _|  _|_|    _|_|_|  _|_|_|_|  _|  _|_|    _|_|      _|_|_|  _|_|_|  _|_|    
-#    _|_|_|_|  _|  _|_|      _|_|        _|      _|_|      _|_|_|_|  _|    _|  _|    _|    _|  
-#    _|    _|  _|  _|            _|_|    _|      _|        _|        _|    _|  _|    _|    _|  
-#    _|    _|  _|  _|        _|_|_|        _|_|  _|          _|_|_|    _|_|_|  _|    _|    _|  
+#    _|    _|      _|  _|_|    _|_|_|  _|_|_|_|  _|  _|_|    _|_|      _|_|_|  _|_|_|  _|_|
+#    _|_|_|_|  _|  _|_|      _|_|        _|      _|_|      _|_|_|_|  _|    _|  _|    _|    _|
+#    _|    _|  _|  _|            _|_|    _|      _|        _|        _|    _|  _|    _|    _|
+#    _|    _|  _|  _|        _|_|_|        _|_|  _|          _|_|_|    _|_|_|  _|    _|    _|
 
 # BEGIN is executed before anything else in the script
 # this sets up the search path for library modules
@@ -31,16 +31,18 @@ use Cpanel::Config          ();
 use Whostmgr::HTMLInterface ();
 use Whostmgr::ACLS ();
 
+use Net::IP qw(:PROC);
+
 my $debug = 0;
 
 use constant BASE_URL => 'http://localhost:2086/json-api';
 
 sub main();
 sub getFormData( $$ );
+sub getConfirmation( $$ );
 sub processFormData( $$ );
 sub authorizedRequest( $$$@ );
 sub processJSONresponse( $$$ );
-sub makeJavascript();
 
 main;
 
@@ -50,14 +52,31 @@ sub main() {
 
     my $w = CGI->new();
     my $title = 'Populate BIND Zone';
+    my @javaScript = <DATA>;
 
     Whostmgr::ACLS::init_acls();
 
-    if ( $w->param( 'hostname_offset' ) ) {
+    print
+	$w->header( -expires => '-1D' ),
+	$w->start_html(
+	    -title => $title,
+	    -script => join( "", @javaScript ),
+	);
+
+    Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_init-zone.cgi' );
+
+
+    if ( $w->param( 'affirmed' )) {
 	processFormData( $w, $title );
+    } elsif ( $w->param( 'hostname_offset' )) {
+	getConfirmation( $w, $title );
     } else {
 	getFormData( $w, $title );
     }
+
+    Whostmgr::HTMLInterface::sendfooter();
+
+    print $w->end_html(), "\n";
 }
 
 sub getFormData( $$ ) {
@@ -65,13 +84,6 @@ sub getFormData( $$ ) {
     my $title = shift;
 
     my $returnValue = undef;
-
-    print
-	$w->header( -expires => '-1D' ),
-	$w->start_html(
-	    -title => $title,
-	    -script => makeJavascript(),
-	);
 
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
@@ -93,8 +105,12 @@ sub getFormData( $$ ) {
 
 	# $domains is the JSON data structure returned from the query
 	# @domains is the array containing a sorted list of unique domains
+	# @forwardDomains contains "normal" domains, and
+	# @inaddrDomains contains "reverse" (in-addr.arpa) domains
 	my $domains = authorizedRequest( $w, $ua, 'listzones', ( 'api.version=1', 'searchtype=owner', ));
 	my @domains = ();
+	my @forwardDomains = ();
+	my @inaddrDomains = ();
 
 	if ( $domains ) {
 
@@ -103,14 +119,15 @@ sub getFormData( $$ ) {
 	    # in-addr.arpa zones
 	    @domains = map( { $_->{domain} } @{$domains->{data}->{zone}} );
 	    @domains = keys( %{{ map { $_ => 1 } @domains }} );
-	    @domains = sort( grep( !/(in-addr|ip6)\.arpa/, @domains ));
+	    @forwardDomains = sort( grep( !/(in-addr|ip6)\.arpa/, @domains ));
+	    @inaddrDomains = sort( grep( /(in-addr|ip6)\.arpa/, @domains ));
 
-	    # prepend a placeholder for adding a new domain
-	    unshift( @domains, ( '-Add New-', ));
-	    # and a blank placeholder to force a choice
-	    unshift( @domains, ( '', ));
+	    # prepend placeholders for adding a new domain
+	    unshift( @forwardDomains, ( '', '-Add New-', ));
+	    unshift( @inaddrDomains, ( '', '-Add New-', ));
 	} else {
-	    @domains = ( '', '-Add New-' );
+	    @forwardDomains = ( '', '-Add New-' );
+	    @inaddrDomains = ( '', '-Add New-' );
 	}
 
 	print
@@ -122,18 +139,17 @@ sub getFormData( $$ ) {
 		-name => 'init_zone',
 		-method => 'POST',
 		-action => '/cgi/addon_init-zone.cgi',
-		#-onSubmit => 'return validateForm()',
 	    ), "\n";
 
 	print
-	    $w->start_div( { -id => 'outer' } );
+	    $w->start_div({ -id => 'outer' });
 
 	print
-	    $w->start_table ( { -border => '0' } );
+	    $w->start_table ({ -border => '0' });
 
 	print
-	    $w->Tr( { -align => 'left' },
-		    $w->th( { -align => 'right' }, 'Owner:&nbsp' ),
+	    $w->Tr({ -align => 'left' },
+		    $w->th({ -align => 'right' }, 'Owner:&nbsp' ),
 		    $w->td(
 			$w->popup_menu(
 			    -id => 'owner',
@@ -141,34 +157,35 @@ sub getFormData( $$ ) {
 			    -values => \@owners,
 			),
 		    ),
-		    $w->td( { -id => 'info_owners' }, '' ),
+		    $w->td({ -id => 'info_owners' }, '' ),
 	    ), "\n";
 
 	print $w->end_table (), "\n";
 
+	### forward domains
 	print
-	    $w->table ( { -border => '0', id => 't1' },
-			$w->Tr( { -align => 'left' },
-				$w->th( { -align => 'right' }, 'Choose a domain:&nbsp' ),
+	    $w->table ({ -border => '0', id => 't1' },
+			$w->Tr({ -align => 'left' },
+				$w->th({ -align => 'right' }, 'Choose a domain:&nbsp' ),
 				$w->td(
 				    $w->popup_menu(
 					-id => 'existing_domain',
 					-name => 'existing_domain',
-					-values => \@domains,
+					-values => \@forwardDomains,
 					-onChange => 'processDomain(this, "info_domain", "domain", true)',
 				    ),
 				),
-				$w->td( { -id => 'info_existing_domain' }, '&nbsp;' ),
+				$w->td({ -id => 'info_existing_domain' }, '&nbsp;' ),
 			),
 	    ), "\n";
 
 	# hide this <div> at first (style="display: none")
-	# the javascript function processDomain() makes in visible and invisible
+	# the javascript function processDomain() makes this visible and invisible
 	print
-	    $w->div( { -id => 'domain', -style => 'display: none' },
-		     $w->table ( { -border => '0', -id => 't2' },
-				 $w->Tr( { -align => 'left' },
-					 $w->th( { -align => 'right' }, 'New Domain:&nbsp;' ),
+	    $w->div({ -id => 'domain', -style => 'display: none' },
+		     $w->table ({ -border => '0', -id => 't2' },
+				 $w->Tr({ -align => 'left' },
+					 $w->th({ -align => 'right' }, 'New Domain:&nbsp;' ),
 					 $w->td(
 					     $w->textfield(
 						 -id => 'domain',
@@ -178,15 +195,53 @@ sub getFormData( $$ ) {
 						 -onChange => 'validateHostName(this, "info_domain", true)'
 					     ),
 					 ),
-					 $w->td( { -id => 'info_domain' }, '&nbsp;' ),
+					 $w->td({ -id => 'info_domain' }, '&nbsp;' ),
+				 ),
+		     ), "\n"
+	    );
+
+	### in-addr.arpa (reverse) domains
+	print
+	    $w->table ({ -border => '0', id => 't1' },
+			$w->Tr({ -align => 'left' },
+				$w->th({ -align => 'right' }, 'Choose a reverse domain:&nbsp' ),
+				$w->td(
+				    $w->popup_menu(
+					-id => 'existing_domain',
+					-name => 'existing_domain',
+					-values => \@forwardDomains,
+					-onChange => 'processDomain(this, "info_domain", "domain", true)',
+				    ),
+				),
+				$w->td({ -id => 'info_existing_domain' }, '&nbsp;' ),
+			),
+	    ), "\n";
+
+	# hide this <div> at first (style="display: none")
+	# the javascript function processDomain() makes this visible and invisible
+	print
+	    $w->div({ -id => 'domain', -style => 'display: none' },
+		     $w->table ({ -border => '0', -id => 't2' },
+				 $w->Tr({ -align => 'left' },
+					 $w->th({ -align => 'right' }, 'New Domain:&nbsp;' ),
+					 $w->td(
+					     $w->textfield(
+						 -id => 'domain',
+						 -name => 'domain',
+						 -size => '32',
+						 -maxlength => '56',
+						 -onChange => 'validateHostName(this, "info_domain", true)'
+					     ),
+					 ),
+					 $w->td({ -id => 'info_domain' }, '&nbsp;' ),
 				 ),
 		     ), "\n"
 	    );
 
 	print
-	    $w->start_table ( { -border => '0' } ),
-	    $w->Tr( { -align => 'left' },
-		    $w->th( { -align => 'right' }, 'Base Address (first three octets):&nbsp;' ),
+	    $w->start_table ({ -border => '0' } ),
+	    $w->Tr({ -align => 'left' },
+		    $w->th({ -align => 'right' }, 'Base Address (first three octets):&nbsp;' ),
 		    $w->td(
 			$w->textfield(
 			    -id => 'ipv4network',
@@ -195,12 +250,12 @@ sub getFormData( $$ ) {
 			    -maxlength => 11,
 			),
 		    ),
-		    $w->td( { -id => 'info_ipv4network' }, '&nbsp;' ),
+		    $w->td({ -id => 'info_ipv4network' }, '&nbsp;' ),
 	    ), "\n";
 
 	print
-	    $w->Tr( { -align => 'left' },
-		    $w->th( { -align => 'right' }, 'Fourth octet start:&nbsp;' ),
+	    $w->Tr({ -align => 'left' },
+		    $w->th({ -align => 'right' }, 'Fourth octet start:&nbsp;' ),
 		    $w->td(
 			$w->textfield(
 			    -id => 'ipv4start',
@@ -210,12 +265,12 @@ sub getFormData( $$ ) {
 			    -onchange  => 'validateNumericRange(this, "info_ipv4start", 1, 255, true)',
 			),
 		    ),
-		    $w->td( { -id => 'info_ipv4start' }, '&nbsp;' ),
+		    $w->td({ -id => 'info_ipv4start' }, '&nbsp;' ),
 	    ), "\n";
 
 	print
-	    $w->Tr( { -align => 'left' },
-		    $w->th( { -align => 'right' }, 'Fourth octet end:&nbsp;' ),
+	    $w->Tr({ -align => 'left' },
+		    $w->th({ -align => 'right' }, 'Fourth octet end:&nbsp;' ),
 		    $w->td(
 			$w->textfield(
 			    -id => 'ipv4end',
@@ -225,12 +280,12 @@ sub getFormData( $$ ) {
 			    -onchange  => 'validateNumericRange(this, "info_ipv4end", (parseInt(document.forms[0].elements["ipv4start"].value) + 1), 255, true)',
 			),
 		    ),
-		    $w->td( { -id => 'info_ipv4end' }, '&nbsp;' ),
+		    $w->td({ -id => 'info_ipv4end' }, '&nbsp;' ),
 	    ), "\n";
 
 	print
-	    $w->Tr( { -align => 'left' },
-		    $w->th( { -align => 'right' }, 'Base hostname:&nbsp' ),
+	    $w->Tr({ -align => 'left' },
+		    $w->th({ -align => 'right' }, 'Base hostname:&nbsp' ),
 		    $w->td(
 			$w->textfield(
 			    -id => 'hostname_base',
@@ -240,12 +295,12 @@ sub getFormData( $$ ) {
 			    -onchange  => 'validateHostName(this, "info_hostname_base", true)',
 			),
 		    ),
-		    $w->td( { -id => 'info_hostname_base' }, '&nbsp;' ),
+		    $w->td({ -id => 'info_hostname_base' }, '&nbsp;' ),
 	    ), "\n";
 
 	print
-	    $w->Tr( { -align => 'left' },
-		    $w->th( { -align => 'right' }, 'Starting point for hostname increment:&nbsp' ),
+	    $w->Tr({ -align => 'left' },
+		    $w->th({ -align => 'right' }, 'Starting point for hostname increment:&nbsp' ),
 		    $w->td(
 			$w->textfield(
 			    -id => 'hostname_offset',
@@ -255,58 +310,52 @@ sub getFormData( $$ ) {
 			    -onchange  => 'validateNumericRange(this, "info_hostname_offset", 1, 999, true)',
 			),
 		    ),
-		    $w->td( { -id => 'info_hostname_offset' }, '&nbsp;' ),
+		    $w->td({ -id => 'info_hostname_offset' }, '&nbsp;' ),
 	    ), "\n";
 
 	print
-	    $w->Tr( { -align => 'left' },
+	    $w->Tr({ -align => 'left' },
 		    $w->td(
 			$w->checkbox(
 			    -id => 'verbose',
 			    -name => 'verbose',
-			    -value => 'OFF',
+			    -value => 'ON',
 			    -label => 'Verbose processing',
 			),
 		    ),
 	    ), "\n";
 
 	print
-	    $w->Tr( { -align => 'left' },
+	    $w->Tr({ -align => 'left' },
 		    $w->td(
-			$w->submit( -name => 'submit', -label => 'Make It So' ),
+			$w->submit(
+			    -name => 'submit',
+			    -label => 'Make It So'
+			),
 		    ),
 	    ), "\n";
 
 	print $w->end_form(), "\n";
 	print $w->end_table (), "\n";
-	print $w->end_div( { id => 'outer' });
+	print $w->end_div({ id => 'outer' });
 
     } else {
 
-	Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_init-zone.cgi' );
 	print
 	    $w->br(), $w->br(),
-	    $w->div( { -align => 'center' },
+	    $w->div({ -align => 'center' },
 		     $w->h1( 'Permission denied' ),
 		     "\n"
 	    );
-	Whostmgr::HTMLInterface::sendfooter();
 
     }
-
-    print $w->end_html(), "\n";
 }
 
-sub processFormData( $$ ) {
+sub getConfirmation( $$ ) {
     my $w = shift;
     my $title = shift;
 
     my $returnValue = undef;
-
-    print
-	$w->header( -expires => '-1D' ),
-	$w->start_html( -title => $title ),
-	$w->br();
 
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
@@ -314,9 +363,9 @@ sub processFormData( $$ ) {
     if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
 
 	# get all the parameters from the completed form
+	my $owner = $w->param( 'owner' );
 	my $existing_domain = $w->param( 'existing_domain' );
 	my $domain = $w->param( 'domain' );
-	my $owner = $w->param( 'owner' );
 	my $ipv4network = $w->param( 'ipv4network' );
 	my $ipv4start = $w->param( 'ipv4start' );
 	my $ipv4end = $w->param( 'ipv4end' );
@@ -327,6 +376,136 @@ sub processFormData( $$ ) {
 	my $newZone = ( $existing_domain =~ /^-add\s+new-$/i );
 	my @bind = ();
 
+	my $ipv4AddressStart = $ipv4network . '.' . $ipv4start;
+	my $addrCount = $ipv4start;
+	my $hostCount = $hostname_offset;
+
+	my %params = $w->Vars();
+
+	my $ua = LWP::UserAgent->new;
+
+	# they chose an existing domain
+	if ( $existing_domain !~ /^-add new-/i ) {
+	    $domain = $existing_domain;
+	}
+
+	# make the list of IP addresses and hostnames
+	# save the full IP address, the domain, and the numbered hostname
+	# use an array rather than a hash so we can preserve the order of entries
+	for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
+	    $bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
+	    $bind[$addrCount]->{domain} = sprintf( '%s.', $domain );
+	    $bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
+	    $hostCount++;
+	}
+	if ( $debug || $verbose ) {
+	    print
+		$w->div({ -id => 'debugzonerecords' },
+		    $w->p( 'DEBUG: @bind is:' ), "\n",
+		    $w->pre( Dumper( @bind )), "\n",
+		);
+	}
+
+	# display the new records and await confirmation to proceed
+	if ( $newZone ) {
+	    print
+		$w->h1( { -style => 'color:red' },  'Adding new zone' ),
+		$w->p( 'Domain: ', $w->i( $domain )), "\n";
+	}
+	print
+	    $w->start_div({ -id => 'zonerecords' , -style => 'display: block'} ), "\n",
+	    $w->start_ul({ -style => 'list-style-type: none; padding: 5px; margin: 5em;' }), "\n";
+	foreach my $record ( @bind ) {
+	    next unless ( $record->{ipv4address} );
+	    print
+		$w->li(
+		    $record->{ipv4address}, " A ",
+		    $record->{hostname} . '.' . $record->{domain},
+		),
+		"\n";
+	}
+	print
+	    $w->end_ul(),
+	    $w->end_div({-id => 'zonerecords' } ),
+	    "\n";
+
+	print
+	    $w->start_form(
+		-name => 'commit_records',
+		-method => 'POST',
+		-action => '/cgi/addon_init-zone.cgi',
+	    ), "\n";
+	print
+	    $w->hidden(
+		-name => 'affirmed',
+		-default => '1',
+	    ),
+	    "\n";
+
+	# save the parameters from the previous form
+	foreach my $p ( sort( keys( %params ))) {
+	    next if ( $p =~ /submit/ );
+	    print
+		$w->hidden(
+		    -name => $p,
+		    -default => $w->param( $p )
+		), "\n";
+	}
+
+	print
+	    $w->submit(
+		-name => 'submit',
+		-label => 'Looks Good'
+	    ), "\n";
+
+	print $w->end_form(), "\n";
+
+	print
+	    $w->p(
+		'Click your browser\'s Back button if you need to make changes.'
+	    ), "\n";
+
+    } else {
+
+    	print
+    	    $w->br(), $w->br(),
+    	    $w->div({ -align => 'center' },
+    		     $w->h1( 'Permission denied' ),
+    		     "\n"
+    	    );
+    }
+}
+
+sub processFormData( $$ ) {
+    my $w = shift;
+    my $title = shift;
+
+    my $returnValue = undef;
+
+    # Ensure they have proper access before doing anything else. See
+    # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
+    # for details.
+    if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
+
+	# get all the parameters from the completed form
+	my $owner = $w->param( 'owner' );
+	my $existing_domain = $w->param( 'existing_domain' );
+	my $domain = $w->param( 'domain' );
+	my $ipv4network = $w->param( 'ipv4network' );
+	my $ipv4start = $w->param( 'ipv4start' );
+	my $ipv4end = $w->param( 'ipv4end' );
+	my $hostname_base = $w->param( 'hostname_base' );
+	my $hostname_offset = $w->param( 'hostname_offset' );
+	my $verbose = $w->param( 'verbose' );
+
+	my $newZone = ( $existing_domain =~ /^-add\s+new-$/i );
+	my @bind = ();
+
+	my $ipv4AddressStart = $ipv4network . '.' . $ipv4start;
+	my $addrCount = $ipv4start;
+	my $hostCount = $hostname_offset;
+	my $response = undef;
+
 	my $ua = LWP::UserAgent->new;
 
 	# they chose an existing domain
@@ -334,122 +513,88 @@ sub processFormData( $$ ) {
 	    $domain = $existing_domain;
 	}
 
-	# perform one last validation of the form data
-	if ( $ipv4start < $ipv4end ) {
+	# make the list of IP addresses and hostnames
+	# save the full IP address, the domain, and the numbered hostname
+	# use an array rather than a hash so we can preserve the order of entries
+	for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
+	    $bind[$addrCount]->{ipv4Address} = sprintf( '%s.%d', $ipv4network, $addrCount );
+	    $bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
+	    $hostCount++;
+	}
+	if ( $debug || $verbose ) {
+	    print
+		$w->div({ -id => 'debugzonerecords' },
+		    $w->p( 'DEBUG: @bind is:' ), "\n",
+		    $w->pre( Dumper( @bind )), "\n",
+		);
+	}
 
-	    my $ipv4AddressStart = $ipv4network . '.' . $ipv4start;
+	# create a new zone
+	if ( $newZone ) {
+	    $response = authorizedRequest( $w, $ua, 'adddns',
+					   (
+					    'domain=' . $domain,
+					    'ip=' . $ipv4AddressStart,
+					    'trueowner=' . $owner
+					   ));
+	}
 
-	    # ensure the form '123.123.123.123'
-	    if ( $ipv4AddressStart =~ /^(\d+\.){3}\d+$/ ) {
-		my @quads = split( /\./, $ipv4AddressStart );
-		my $result = undef;
+	if ( ! $newZone || ( $newZone && $response->{metadata}->{result} == 1 )) {
 
-		# ensure valid values for each component of the address
-		foreach my $quad ( @quads ) {
-		    if ( $quad < 1 || $quad > 255 ) {
-			$result = $quad;
+	    # finally, send the boatload off to cPanel,
+	    # creating A records and PTR records for each hostname
+	    for ( my $count = 0; $count <= $#bind; $count++ ) {
+		my $record = $bind[$count];
+		next unless ( $record->{ipv4address} );
+
+		$response = undef;
+
+		# create the A record
+		$response = authorizedRequest( $w, $ua, 'addzonerecord',
+					       (
+						'zone=' . $domain,
+						'name=' . $record->{hostname} . '.',
+						'address=' . $record->{ipv4address},
+						'type=A',
+					       ));
+
+		# create the PTR record if the A record addition succeeded
+		# see http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/XmlApiAddZoneRecordAddition
+		if ( $response->{metadata}->{result} == 1 ) {
+		    $response = authorizedRequest( $w, $ua, 'addzonerecord',
+						    'zone=' . Net::IP::ip_reverse( $record->{ipv4network}, 24, 4 ),
+						    'name=' . $count,
+						    'ptrdname=' . $record->{hostname} . $domain,
+						    'type=PTR',
+						   );
+		    if ( $response->{metadata}->{result} != 1 ) {
+			print $w->p( 'ERROR: unable to add PTR record' ), "\n";
 			last;
 		    }
-		}
-		# it is a Good Thing(tm) that $result remained undefined
-		if ( ! defined( $result )) {
-
-		    my $addrCount = $ipv4start;
-		    my $hostCount = $hostname_offset;
-		    my $response = undef;
-		    my $jRef = undef;
-
-		    # create a new zone
-		    if ( $newZone ) {
-			$response = authorizedRequest( $w, $ua, 'adddns',
-						       ( 'api.version=1',
-							 'domain=' . $domain,
-							 'ip=' . $ipv4AddressStart,
-							 'trueowner=' . $owner
-						       ));
-		    }
-
-		    if ( ! $newZone || ( $newZone && $response->{metadata}->{result} == 1 )) {
-
-			# make the list of IP addresses and hostnames
-			# save the full IP address, the last quad (for the PTR record), and the numbered hostname
-			# use an array rather than a hash so we can preserve the order of entries
-			for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
-			    $bind[$addrCount]->{ipv4Address} = sprintf( '%s.%d', $ipv4network, $addrCount );
-			    $bind[$addrCount]->{domain} = sprintf( '%s.', $domain );
-			    $bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
-			    $hostCount++;
-			}
-			if ( $debug ) {
-			    print
-				$w->p( 'DEBUG: @bind is:' ), "\n",
-				$w->pre( Dumper( @bind )), "\n";
-			}
-
-			# finally, send the boatload off to cPanel,
-			# creating A records and PTR records for each hostname
-			foreach my $record ( @bind ) {
-			    $response = undef;
-
-			    $response = authorizedRequest( $w, $ua, 'addzonerecord',
-							   ( 'api.version=1',
-							     'zone=' . $record->{domain},
-							     'address=' . $record->{ipv4address},
-							     'type=' . 'A',
-							   ));
-
-			    if ( $response->{metadata}->{result} == 1 ) {
-				$response = authorizedRequest( $w, $ua, 'addzonerecord',
-							       ( 'api.version=1',
-								 'zone=' . 'rev.' . $record->{ipv4network},
-								 'name=' . $record->{domain} . '.',
-								 'ptrdname=' . $record->{hostname},
-								 'address=' . $record->{ipv4address},
-								 'type=' . 'PTR',
-							       ));
-				if ( $response->{metadata}->{result} != 1 ) {
-				    print $w->p( 'ERROR: unable to add PTR record' ), "\n";
-				    last;
-				}
-			    } else {
-				print $w->p( 'ERROR: unable to add A record' ), "\n";
-				last;
-			    }
-			}
-		    } else {
-			print
-			    $w->p(
-				'ERROR adding zone ',
-				$domain,
-				' Result was ',
-				$response->{metadata}->{result},
-				' Reason was ',
-				$response->{metadata}->{reason},
-			    ), "\n";
-		    }
 		} else {
-		    print $w->p( 'Invalid IP address: ', $result, ' is outside the valid range 1 - 255.' ), "\n";
+		    print $w->p( 'ERROR: unable to add A record' ), "\n";
+		    last;
 		}
-
-	    } else {
-		print $w->p( 'Invalid IP address. Please use a "dotted-quad" for IPv4 addresses.' ), "\n";
 	    }
 	} else {
-	    print $w->p( 'Invalid IP address range. End address must be greater than start address.' ), "\n";
+
+	    print
+		$w->h1( 'ERROR adding zone for domain: ', $domain ),
+		$w->p(
+		    'Result: ', $response->{metadata}->{result},
+		    $w->br(),
+		    'Reason: ', $response->{metadata}->{reason},
+		), "\n";
 	}
     } else {
 
-	Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_init-zone.cgi' );
-	print
-	    $w->br(), $w->br(),
-	    $w->div( { -align => 'center' },
-		     $w->h1( 'Permission denied' ),
-		     "\n"
-	    );
-	Whostmgr::HTMLInterface::sendfooter();
+    	print
+    	    $w->br(), $w->br(),
+    	    $w->div({ -align => 'center' },
+    		     $w->h1( 'Permission denied' ),
+    		     "\n"
+    	    );
     }
-
-    print $w->end_html(), "\n";
 }
 
 # return a hash reference to response data from a request
@@ -518,8 +663,10 @@ sub processJSONresponse( $$$ ) {
 		print
 		    $w->p(
 			$completionMessage,
-			': response was ', $jsonRef->{metadata}->{result},
-			', reason was: ', $jsonRef->{metadata}->{reason},
+			$w->br(),
+			'Result: ', $jsonRef->{metadata}->{result},
+			$w->br(),
+			'Reason: ', $jsonRef->{metadata}->{reason},
 		    );
 	    }
 	} else {
@@ -532,10 +679,34 @@ sub processJSONresponse( $$$ ) {
     $jsonRef;
 }
 
-# a simple subroutine to encapsulate the javascript
-sub makeJavascript() {
+=pod
 
-    my $script = <<'END_OF_JAVASCRIPT';
+=head1 NAME
+
+addon_init-zone.cgi
+
+=head1 SYNOPSIS
+
+Add a new, or add records to an exising zone for cPanel BIND, automatically filling in the IP addresses and host names based on a template with a starting and ending address.
+
+=head1 DESCRIPTION
+
+addon_init-zone.cgi presents a form to the user to enter zone details including a hostname "template", a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of creating the zone.
+
+=head1 SEE ALSO
+
+=over 8
+
+=item B<WHM Documentation>: http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins
+
+=item B<init-zone.cgi>, the companion script that performs the data manipulation and loads the zone files
+
+=back
+
+=cut
+
+__END__
+// {
 // ----------------------------------------------------------------------
 // Javascript form validation routines.
 // Author: Stephen Poley
@@ -559,31 +730,20 @@ var emptyString = /^\s*$/ ;
 var global_valfield;	// retain valfield for timer thread
 
 // --------------------------------------------
-//                  trim
-// Trim leading/trailing whitespace off string
-// --------------------------------------------
-
-function trim(str)
-{
-  return str.replace(/^\s+|\s+$/g, '');
-}
-
-
-// --------------------------------------------
 //                  setfocus
 // Delayed focus setting to get around IE bug
 // --------------------------------------------
 
 function setFocusDelayed()
 {
-  global_valfield.focus();
+    global_valfield.focus();
 }
 
 function setfocus(valfield)
 {
-  // save valfield in global variable so value retained when routine exits
-  global_valfield = valfield;
-  setTimeout( 'setFocusDelayed()', 100 );
+    // save valfield in global variable so value retained when routine exits
+    global_valfield = valfield;
+    setTimeout( 'setFocusDelayed()', 100 );
 }
 
 
@@ -597,19 +757,19 @@ function msg(fld,     // id of element to display message in
              msgtype, // class to give element ("warn" or "error")
              message) // string to display
 {
-  // setting an empty string can give problems if later set to a
-  // non-empty string, so ensure a space present. (For Mozilla and Opera one could
-  // simply use a space, but IE demands something more, like a non-breaking space.)
-  var dispmessage;
-  if (emptyString.test(message))
-    dispmessage = String.fromCharCode(nbsp);
-  else
-    dispmessage = message;
+    // setting an empty string can give problems if later set to a
+    // non-empty string, so ensure a space present. (For Mozilla and Opera one could
+    // simply use a space, but IE demands something more, like a non-breaking space.)
+    var dispmessage;
+    if (emptyString.test(message))
+	dispmessage = String.fromCharCode(nbsp);
+    else
+	dispmessage = message;
 
-  var elem = document.getElementById(fld);
-  elem.firstChild.nodeValue = dispmessage;
+    var elem = document.getElementById(fld);
+    elem.firstChild.nodeValue = dispmessage;
 
-  elem.className = msgtype;   // set the CSS class to adjust appearance of message
+    elem.className = msgtype;   // set the CSS class to adjust appearance of message
 }
 
 // --------------------------------------------
@@ -628,33 +788,33 @@ function commonCheck(valfield,   // element to be validated
                      infofield,  // id of element to receive info/error msg
                      required)   // true if required
 {
-  var retval = proceed;
-  var elem = document.getElementById(infofield);
+    var retval = proceed;
+    var elem = document.getElementById(infofield);
 
-  if (!document.getElementById) {
-    retval = true;  // not available on this browser - leave validation to the server
-  } else {
-    if (elem.firstChild) {
-      if (elem.firstChild.nodeType == node_text) {
-	if (emptyString.test(valfield.value)) {
-	  if (required) {
-	    msg (infofield, "error", "ERROR: required");
-	    setfocus(valfield);
-	    retval = false;
-	  } else {
-	    msg (infofield, "warn", "");   // OK
-	    retval = true;
-	  }
-	}
-      } else {
-	retval = true;  // infofield is wrong type of node
-      }
-
+    if (!document.getElementById) {
+	retval = true;  // not available on this browser - leave validation to the server
     } else {
-      retval = true;  // not available on this browser
-    }
-  }
-  return retval;
+	if (elem.firstChild) {
+	    if (elem.firstChild.nodeType == node_text) {
+		if (emptyString.test(valfield.value)) {
+		    if (required) {
+			msg (infofield, "error", "ERROR: required");
+			setfocus(valfield);
+			retval = false;
+		    } else {
+			msg (infofield, "warn", "");   // OK
+			    retval = true;
+		    }
+		}
+	    } else {
+		retval = true;  // infofield is wrong type of node
+	    }
+
+	} else {
+	    retval = true;  // not available on this browser
+	}
+}
+    return retval;
 }
 
 // --------------------------------------------
@@ -666,11 +826,11 @@ function commonCheck(valfield,   // element to be validated
 function validatePresent(valfield,   // element to be validated
                          infofield ) // id of element to receive info/error msg
 {
-  var stat = commonCheck (valfield, infofield, true);
-  if (stat != proceed) return stat;
+    var stat = commonCheck (valfield, infofield, true);
+    if (stat != proceed) return stat;
 
-  msg (infofield, "warn", "");
-  return true;
+    msg (infofield, "warn", "");
+    return true;
 }
 
 // --------------------------------------------
@@ -679,25 +839,26 @@ function validatePresent(valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 
-function validateIPv4    (valfield,   // element to be validated
-                         infofield,  // id of element to receive info/error msg
-                         required)   // true if required
+function validateIPv4 (valfield,   // element to be validated
+                      infofield,   // id of element to receive info/error msg
+                      required)    // true if required
 {
     var stat = commonCheck (valfield, infofield, required);
     if (stat != proceed) return stat;
 
-    var tfld = trim(valfield.value);
-    var re = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+    var tfld = valfield.value.replace( /^\s+|\s+$/g, '' );
 
-    if (re.test(tfld)) {
+    if ( /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test( tfld )) {
 	var parts = tfld.split(".");
-	if (parseInt(parseFloat(parts[0])) == 0) {
-	    msg (infofield, "error", "ERROR: not a valid IPv4 address (0?)");
-	    setfocus(valfield);
+
+	if ( parseInt(parseFloat( parts[0] )) == 0 ) {
+	    msg ( infofield, "error", "ERROR: not a valid IPv4 address (0?)" );
+	    setfocus( valfield );
 	    return false;
 	}
-	for (var i=0; i<parts.length; i++) {
-	    if (parseInt(parseFloat(parts[i])) > 255) {
+
+	for ( var i=0; i < parts.length; i++ ) {
+	    if ( parseInt(parseFloat( parts[i] )) > 255) {
 		msg (infofield, "error", "ERROR: not a valid IPv4 address (255?)");
 		setfocus(valfield);
 		return false;
@@ -719,18 +880,19 @@ function validateIPv4    (valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 
-function validateIPv6    (valfield,   // element to be validated
-                         infofield,  // id of element to receive info/error msg
-                         required)   // true if required
+function validateIPv6 (valfield,   // element to be validated
+                      infofield,   // id of element to receive info/error msg
+                      required)    // true if required
 {
     var stat = commonCheck (valfield, infofield, required);
 
     if (stat != proceed) return stat;
 
-    var tfld = trim(valfield.value);
-    var re = /^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))(%.+)?\s*$/;
+    var tfld = valfield.value.replace( /^\s+|\s+$/g, '' );
+    // This regex tests IPv6 addresses in all the common formts
+	var re = /^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))(%.+)?\s*$/;
 
-    if (re.test(tfld)) {
+    if ( re.test( tfld )) {
 	msg (infofield, "info", "");
 	return true;
     } else {
@@ -746,30 +908,30 @@ function validateIPv6    (valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 
-function validateHostName  (valfield,   // element to be validated
-                            infofield,  // id of element to receive info/error msg
-                            required)   // true if required
+function validateHostName (valfield,   // element to be validated
+                           infofield,  // id of element to receive info/error msg
+                           required)   // true if required
 {
-  var stat = commonCheck (valfield, infofield, required);
-  if (stat != proceed) return stat;
+    var stat = commonCheck (valfield, infofield, required);
+    if (stat != proceed) return stat;
 
-  var tfld = trim(valfield.value);
-  var nameRE = /^[a-z0-9\.-]+$/
-  if (!nameRE.test(tfld)) {
-    msg (infofield, "error", "ERROR: not a valid hostname (only [a-z0-9.-])");
-    setfocus(valfield);
-    return false;
-  }
+    var tfld = valfield.value.replace( /^\s+|\s+$/g, '' );
 
-  if (tfld>=200) {
-    msg (infofield, "error", "ERROR: name too long");
-    setfocus(valfield);
-    return false;
-  }
+    if ( ! /^[a-z0-9\.-]+$/.test( tfld )) {
+	msg (infofield, "error", "ERROR: not a valid hostname (only [a-z0-9.-])");
+	setfocus(valfield);
+	return false;
+    }
 
-  msg (infofield, "info", "");
+    if (tfld >= 200) {
+	msg (infofield, "error", "ERROR: name too long");
+	setfocus(valfield);
+	return false;
+    }
 
-  return true;
+    msg (infofield, "info", "");
+
+    return true;
 }
 
 // --------------------------------------------
@@ -778,37 +940,37 @@ function validateHostName  (valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 
-function validateNumericRange  (valfield,   // element to be validated
-                                infofield,  // id of element to receive info/error msg
-                                rmin,       // minimum value in range
-                                rmax,       // maximum value in range
-                                required)   // true if required
+function validateNumericRange (valfield,   // element to be validated
+                               infofield,  // id of element to receive info/error msg
+                               rmin,       // minimum value in range
+                               rmax,       // maximum value in range
+                               required)   // true if required
 {
-  var stat = commonCheck (valfield, infofield, required);
-  if (stat != proceed) return stat;
+    var stat = commonCheck (valfield, infofield, required);
+    if (stat != proceed) return stat;
 
-  var tfld = trim(valfield.value);
-  var numberRE = /^[0-9]+$/
-  if (!numberRE.test(tfld)) {
-    msg (infofield, "error", "ERROR: " + tfld + " is not a valid number (only [0-9]+)");
-    setfocus(valfield);
-    return false;
-  }
+    var tfld = valfield.value.replace( /^\s+|\s+$/g, '' );
 
-  if (tfld < rmin || tfld > rmax) {
-    msg (infofield, "error", "ERROR: " + tfld + " is outside the valid range");
-    setfocus(valfield);
-    return false;
-  }
+    if ( ! /^\d+$/.test(tfld)) {
+	msg (infofield, "error", "ERROR: " + tfld + " is not a valid number (only [0-9]+)");
+	setfocus(valfield);
+	return false;
+    }
 
-  msg (infofield, "info", "");
+    if (tfld < rmin || tfld > rmax) {
+	msg (infofield, "error", "ERROR: " + tfld + " is outside the valid range");
+	setfocus(valfield);
+	return false;
+    }
 
-  return true;
+    msg (infofield, "info", "");
+
+    return true;
 }
 
 // --------------------------------------------
 //             processDomain
-// add a new form element if the value passed is "-Add New-"
+// make the form element in divName visible if the value passed is "-Add New-"
 // Returns true if OK
 // --------------------------------------------
 
@@ -817,51 +979,52 @@ function processDomain (valfield,   // element to be validated
 			divName,    // id of div to hold new form element
 			required)   // true if required
 {
-  var stat = commonCheck (valfield, infofield, required);
-  var returnValue = true;
+    var stat = commonCheck (valfield, infofield, required);
+    var returnValue = true;
 
-  if (stat != proceed) return stat;
+    if (stat != proceed) return stat;
 
-  var tfld = trim(valfield.value);
+    var tfld = valfield.value.replace( /^\s+|\s+$/g, '' );
 
-  var divElement = document.getElementById(divName);
+    var divElement = document.getElementById(divName);
 
-  if ( /^-Add New-$/.test(tfld) ) {
-      // display the input form element to the page
-      divElement.style.display = "block";
-  } else {
-      // hide the domain input form element
-      divElement.style.display = "none";
-  }
+    if ( /^-Add New-$/.test( tfld )) {
+	// set the element style to "visible"
+	    divElement.style.display = "block";
+    } else {
+	// set the element style to "invisible"
+	    divElement.style.display = "none";
+    }
 
-  return returnValue;
-}
-END_OF_JAVASCRIPT
-;
-
-    $script;
+    return returnValue;
 }
 
-__END__
+// get affirmation to commit this set of records
+function commit ( layerDiv )
+{
+    var response = confirm( "OK to commit these records?" );
+    var returnValue = false;
 
-=head1 NAME
+    if (response == true) {
+	returnValue = true;
+	alert("You pressed OK!");
+	hidelayer( layerDiv );
+    } else {
+	alert("You pressed Cancel!");
+    }
 
-addon_init-zone.cgi
+    return returnValue;
+}
 
-=head1 SYNOPSIS
+// toggle visibility of an HTML layer named in layerDiv
+function hidelayer ( layerDiv )
+{
+    var myLayer = document.getElementById(layerDiv).style.display;
 
-Add a new zone to cPanel BIND, automatically filling in the IP addresses and host names based on a template with a starting and ending address.
-
-=head1 DESCRIPTION
-
-addon_init-zone.cgi presents a form to the user to enter zone details including a hostname "template", a starting IP address, and an ending IP address. After validating the entries, this script calls the back-end processor, "/cgi/init-zone.cgi" to perform the actual work of creating the zone.
-
-=head1 SEE ALSO
-
-=over 8
-
-=item B<WHM Documentation>: http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins
-
-=item B<init-zone.cgi>, the companion script that performs the data manipulation and loads the zone files
-
-=back
+    if ( myLayer == "none" ) {
+	document.getElementById( layer ).style.display = "block";
+    } else {
+	document.getElementById( layer ).style.display = "none";
+    }
+}
+// }
