@@ -10,6 +10,9 @@ tmpcPanelZoneFiles="${base}/cPanelZoneFiles"
 varNamed=${ROOT:-/}var/named
 servers=( 10.123.128.11 10.123.128.12 10.123.128.211 10.123.128.212 )
 
+verbose=${VERBOSE:-1}
+debug=${DEBUG:-1}
+
 # temporary file for a cpanel zone list
 cPanelZoneList=$(mktemp)
 trap "rm -f ${cPanelZoneList}; exit" 0 1 2
@@ -19,11 +22,13 @@ test -d ${tmpcPanelZoneFiles} || sudo mkdir ${tmpcPanelZoneFiles}
 
 # see klann@wins.net for an explanation of this wget(1) call
 # Note: the Basic Auth string needs to be updated when the WHM root password changes
+(( verbose == 1 )) && echo "; -- Creating ${cPanelZoneList} --"
 wget -q \
     --output-document=- \
     --header='Authorization: Basic cm9vdDpxbzpMeT02dDg1MjJeSE17aipVeFwjKSgtWWs8bmJ5WUw6QDdWIU5RcSsnRSZmbU87KTRKTyglNSp4amxFNlo=' \
     'http://localhost:2086/json-api/listzones?api.version=1&searchtype=owner' |
   tr '{' '\012' | tr -d '}' > ${cPanelZoneList}
+(( verbose == 1 )) && echo "; -- Created ${cPanelZoneList} --"
 
 todaysDate=$(strftime "%Y%m%d" ${EPOCHSECONDS})
 mtime=${EPOCHSECONDS}		# this is used in the first comment line in the cPanel zone file
@@ -35,8 +40,6 @@ else
     newSerial="${todaysDate}01"
 fi
 
-verbose=${VERBOSE:-1}
-debug=${DEBUG:-1}
 add_forward=${ADD_FORWARD:-1}
 kill_commented=${KILL_COMMENTED:-1}
 reload_named=${RELOAD_NAMED:-0}
@@ -81,9 +84,11 @@ if (( add_forward == 1 )); then
 	file=${${file##*/}%\"*}
 
 	# get the zone file name from the cPanel configuration
+	# this depends on the zone having been in cPanel at the start of this run
 	cPanelZoneFile=$(grep "zonefile.*:\"${zone}\"" ${cPanelZoneList} | cut -d\" -f4)
 
 	(( verbose == 1 )) && echo "; -- Our zone file: ${file}, cPanel zone file: ${cPanelZoneFile}"
+	test -n "${cPanelZoneFile}" || { echo "ERROR: missing cPanelZoneFile"; exit; }
 
 	### Get contents of zone file on bucky and dump into local zone file
 
