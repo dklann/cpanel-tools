@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-#WHMADDON:init-zone:Bulk DNS Add
+#WHMADDON:bulk-dns-add:Bulk DNS Add (zonemaker)
 #ACLS:create-dns
 
 #      _|_|    _|                        _|                                                    
@@ -38,9 +38,9 @@ my $debug = 0;
 use constant BASE_URL => 'http://localhost:2086/json-api';
 
 sub main();
-sub getFormData( $$ );
-sub getConfirmation( $$ );
-sub processFormData( $$ );
+sub getFormData( $ );
+sub getConfirmation( $ );
+sub processFormData( $ );
 sub authorizedRequest( $$$@ );
 sub processJSONresponse( $$$ );
 sub apiMessageDisplay ( $$$ );
@@ -53,7 +53,6 @@ main;
 sub main() {
 
     my $w = CGI->new();
-    my $title = 'Bulk DNS Add';
     my @javaScript = <DATA>;
 
     Whostmgr::ACLS::init_acls();
@@ -61,7 +60,7 @@ sub main() {
     print
 	$w->header( -expires => '-1D' ),
 	$w->start_html(
-	    -title => $title,
+	    -title => 'Bulk DNS Add (zonemaker)',
 	    -script => join( "", @javaScript ),
 	);
 
@@ -69,11 +68,11 @@ sub main() {
 
 
     if ( $w->param( 'affirmed' )) {
-	processFormData( $w, $title );
+	processFormData( $w );
     } elsif ( $w->param( 'hostname_offset' )) {
-	getConfirmation( $w, $title );
+	getConfirmation( $w );
     } else {
-	getFormData( $w, $title );
+	getFormData( $w );
     }
 
     Whostmgr::HTMLInterface::sendfooter();
@@ -81,9 +80,8 @@ sub main() {
     print $w->end_html(), "\n";
 }
 
-sub getFormData( $$ ) {
+sub getFormData( $ ) {
     my $w = shift;
-    my $title = shift;
 
     my $returnValue = undef;
 
@@ -92,6 +90,10 @@ sub getFormData( $$ ) {
     # for details.
     if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
 	my $ua = LWP::UserAgent->new;
+
+	print
+	    $w->h1( 'Bulk DNS Addition (formerly known as zonemaker)' ), "\n",
+	    $w->p( 'Use this form to add a group of hosts and addresses to a DNS zone for a reseller.' );
 
 	# $owners is the JSON data structure returned from the query
 	# @owners is the array containing a sorted list of unique owners
@@ -126,10 +128,10 @@ sub getFormData( $$ ) {
 	    @inaddrDomains = sort {
 		my @a = $a =~ /(\d+)\.(\d+)\.(\d+)\.(in-addr\.arpa|ip6\.arpa)/;
 		my @b = $b =~ /(\d+)\.(\d+)\.(\d+)\.(in-addr\.arpa|ip6\.arpa)/;
-		    $a[2] <=> $b[2]
-		           ||
+		$a[2] <=> $b[2]
+		    ||
 		    $a[1] <=> $b[1]
-		           ||
+		    ||
 		    $a[0] <=> $b[0]
 	    } grep( /(in-addr|ip6)\.arpa/, @domains );
 
@@ -142,10 +144,6 @@ sub getFormData( $$ ) {
 	}
 
 	print
-	    $w->h1( 'Bulk DNS Addition' ), "\n",
-	    $w->p( 'Use this form to add a group of hosts and addresses to a DNS zone for a reseller.' );
-
-	print
 	    $w->start_form(
 		-name => 'bulk_add',
 		-method => 'POST',
@@ -153,22 +151,21 @@ sub getFormData( $$ ) {
 	    ), "\n";
 
 	print
-	    $w->start_div({ -id => 'outer' });
-
-	print
-	    $w->start_table ({ -border => '0' });
+	    $w->start_div({ -id => 'outer' }),
+	    $w->start_table ({ -border => '0' }),
+	    "\n";
 
 	print
 	    $w->Tr({ -align => 'left' },
-		    $w->th({ -align => 'right' }, 'Owner:&nbsp' ),
-		    $w->td(
-			$w->popup_menu(
-			    -id => 'owner',
-			    -name => 'owner',
-			    -values => \@owners,
-			),
-		    ),
-		    $w->td({ -id => 'info_owners' }, '' ),
+		   $w->th({ -align => 'right' }, 'Owner:&nbsp;' ),
+		   $w->td(
+		       $w->popup_menu(
+			   -id => 'owner',
+			   -name => 'owner',
+			   -values => \@owners,
+		       ),
+		   ),
+		   $w->td({ -id => 'info_owners' }, '' ),
 	    ), "\n";
 
 	print $w->end_table (), "\n";
@@ -176,46 +173,54 @@ sub getFormData( $$ ) {
 	### forward domains
 	print
 	    $w->table ({ -border => '0', id => 't1' },
-			$w->Tr({ -align => 'left' },
-				$w->th({ -align => 'right' }, 'Choose a domain:&nbsp' ),
-				$w->td(
-				    $w->popup_menu(
-					-id => 'existing_forward_domain',
-					-name => 'existing_forward_domain',
-					-values => \@forwardDomains,
-					-onChange => 'processDomain(this, "info_existing_forward_domain", "forward_domain", true)',
-				    ),
-				),
-				$w->td({ -id => 'info_existing_forward_domain' }, '&nbsp;' ),
-			),
+		       $w->Tr({ -align => 'left' },
+			      $w->th({ -align => 'right' }, 'Choose a forward domain:&nbsp;' ),
+			      $w->td(
+				  $w->popup_menu(
+				      -id => 'existing_forward_domain',
+				      -name => 'existing_forward_domain',
+				      -values => \@forwardDomains,
+				      -onChange => 'processDomain(this, "info_existing_forward_domain", "forward_domain", true)',
+				  ),
+			      ),
+			      $w->td({ -id => 'info_existing_forward_domain' }, '&nbsp;' ),
+		       ),
 	    ), "\n";
 
 	# hide this <div> at first (style="display: none")
 	# the javascript function processDomain() makes this visible and invisible
 	print
 	    $w->div({ -id => 'forward_domain', -style => 'display: none' },
-		     $w->table ({ -border => '0', -id => 't2' },
-				 $w->Tr({ -align => 'left' },
-					 $w->th({ -align => 'right' }, 'New Domain:&nbsp;' ),
-					 $w->td(
-					     $w->textfield(
-						 -id => 'forward_domain',
-						 -name => 'forward_domain',
-						 -size => '32',
-						 -maxlength => '56',
-						 -onChange => 'validateHostName(this, "info_forward_domain", true)'
-					     ),
-					 ),
-					 $w->td({ -id => 'info_forward_domain' }, '&nbsp;' ),
-				 ),
-		     ), "\n"
+		    $w->table ({ -border => '0', -id => 't2' },
+			       $w->Tr({ -align => 'left' },
+				      $w->th({ -align => 'right' }, 'New Domain:&nbsp;' ),
+				      $w->td(
+					  $w->textfield(
+					      -id => 'forward_domain',
+					      -name => 'forward_domain',
+					      -size => '32',
+					      -maxlength => '56',
+					      -onChange => 'validateHostName(this, "info_forward_domain", true)'
+					  ),
+				      ),
+				      $w->td({ -id => 'info_forward_domain' }, '&nbsp;' ),
+			       ),
+		    ), "\n"
 	    );
 
 	### in-addr.arpa (reverse) domains
 	print
-	    $w->table ({ -border => '0', id => 't1' },
+	    $w->table ({ -border => '0', id => 't3' },
 		       $w->Tr({ -align => 'left' },
-			      $w->th({ -align => 'right' }, 'Choose a reverse domain:&nbsp' ),
+			      $w->td(
+				  $w->checkbox(
+				      -id => 'do_reverse_domain',
+				      -name => 'do_reverse_domain',
+				      -checked => 0,
+				      -value => 'ON',
+				      -label => '',
+				  )),
+			      $w->th({ -align => 'right' }, 'Choose a reverse domain (check to include):&nbsp;' ),
 			      $w->td(
 				  $w->popup_menu(
 				      -id => 'existing_reverse_domain',
@@ -232,37 +237,38 @@ sub getFormData( $$ ) {
 	# the javascript function processDomain() makes this visible and invisible
 	print
 	    $w->div({ -id => 'reverse_domain', -style => 'display: none' },
-		     $w->table ({ -border => '0', -id => 't2' },
-				 $w->Tr({ -align => 'left' },
-					 $w->th({ -align => 'right' }, 'New Reverse Domain:&nbsp;' ),
-					 $w->td(
-					     $w->textfield(
-						 -id => 'reverse_domain',
-						 -name => 'reverse_domain',
-						 -size => '32',
-						 -maxlength => '56',
-						 -onChange => 'validateReverseZone(this, "info_reverse_domain", true)'
-					     ),
-					 ),
-					 $w->td({ -id => 'info_reverse_domain' }, '&nbsp;' ),
-				 ),
-		     ), "\n"
+		    $w->table ({ -border => '0', -id => 't4' },
+			       $w->Tr({ -align => 'left' },
+				      $w->th({ -align => 'right' }, 'New Reverse Domain:&nbsp;' ),
+				      $w->td(
+					  $w->textfield(
+					      -id => 'reverse_domain',
+					      -name => 'reverse_domain',
+					      -size => '32',
+					      -maxlength => '56',
+					      -onChange => 'validateReverseZone(this, "info_reverse_domain", true)'
+					  ),
+				      ),
+				      $w->td({ -id => 'info_reverse_domain' }, '&nbsp;' ),
+			       ),
+		    ), "\n"
 	    );
 
-	# print
-	#     $w->start_table ({ -border => '0' } ),
-	#     $w->Tr({ -align => 'left' },
-	# 	    $w->th({ -align => 'right' }, 'Base Address (first three octets):&nbsp;' ),
-	# 	    $w->td(
-	# 		$w->textfield(
-	# 		    -id => 'ipv4network',
-	# 		    -name => 'ipv4network',
-	# 		    -size => 11,
-	# 		    -maxlength => 11,
-	# 		),
-	# 	    ),
-	# 	    $w->td({ -id => 'info_ipv4network' }, '&nbsp;' ),
-	#     ), "\n";
+	print
+	    $w->start_table ({ -border => '0' } ),
+	    $w->Tr({ -align => 'left' },
+		   $w->th({ -align => 'right' }, 'Base Address (first three octets):&nbsp;' ),
+		   $w->td(
+		       $w->textfield(
+			   -id => 'ipv4network',
+			   -name => 'ipv4network',
+			   -size => 11,
+			   -maxlength => 11,
+			   -onChange => 'validateBaseAddress(this, "info_ipv4network", true)',
+		       ),
+		   ),
+		   $w->td({ -id => 'info_ipv4network' }, '&nbsp;' ),
+	    ), "\n";
 
 	print
 	    $w->start_table ({ -border => '0' } ),
@@ -282,90 +288,90 @@ sub getFormData( $$ ) {
 
 	print
 	    $w->Tr({ -align => 'left' },
-		    $w->th({ -align => 'right' }, 'Fourth octet end:&nbsp;' ),
-		    $w->td(
-			$w->textfield(
-			    -id => 'ipv4end',
-			    -name => 'ipv4end',
-			    -size => 3,
-			    -maxlength => 3,
-			    -onchange  => 'validateNumericRange(this, "info_ipv4end", (parseInt(document.forms[0].elements["ipv4start"].value) + 1), 255, true)',
-			),
-		    ),
-		    $w->td({ -id => 'info_ipv4end' }, '&nbsp;' ),
+		   $w->th({ -align => 'right' }, 'Fourth octet end:&nbsp;' ),
+		   $w->td(
+		       $w->textfield(
+			   -id => 'ipv4end',
+			   -name => 'ipv4end',
+			   -size => 3,
+			   -maxlength => 3,
+			   -onchange  => 'validateNumericRange(this, "info_ipv4end", (parseInt(document.forms[0].elements["ipv4start"].value) + 1), 255, true)',
+		       ),
+		   ),
+		   $w->td({ -id => 'info_ipv4end' }, '&nbsp;' ),
 	    ), "\n";
 
 	print
 	    $w->Tr({ -align => 'left' },
-		    $w->th({ -align => 'right' }, 'Base hostname:&nbsp' ),
-		    $w->td(
-			$w->textfield(
-			    -id => 'hostname_base',
-			    -name => 'hostname_base',
-			    -size => 32,
-			    -maxlength => 64,
-			    -onchange  => 'validateHostName(this, "info_hostname_base", true)',
-			),
-		    ),
-		    $w->td({ -id => 'info_hostname_base' }, '&nbsp;' ),
+		   $w->th({ -align => 'right' }, 'Base hostname:&nbsp;' ),
+		   $w->td(
+		       $w->textfield(
+			   -id => 'hostname_base',
+			   -name => 'hostname_base',
+			   -size => 32,
+			   -maxlength => 64,
+			   -onchange  => 'validateHostName(this, "info_hostname_base", true)',
+		       ),
+		   ),
+		   $w->td({ -id => 'info_hostname_base' }, '&nbsp;' ),
 	    ), "\n";
 
 	print
 	    $w->Tr({ -align => 'left' },
-		    $w->th({ -align => 'right' }, 'Starting point for hostname increment:&nbsp' ),
-		    $w->td(
-			$w->textfield(
-			    -id => 'hostname_offset',
-			    -name => 'hostname_offset',
-			    -size => 3,
-			    -maxlength => 3,
-			    -onchange  => 'validateNumericRange(this, "info_hostname_offset", 1, 999, true)',
-			),
-		    ),
-		    $w->td({ -id => 'info_hostname_offset' }, '&nbsp;' ),
+		   $w->th({ -align => 'right' }, 'Starting point for hostname increment:&nbsp;' ),
+		   $w->td(
+		       $w->textfield(
+			   -id => 'hostname_offset',
+			   -name => 'hostname_offset',
+			   -size => 3,
+			   -maxlength => 3,
+			   -onchange  => 'validateNumericRange(this, "info_hostname_offset", 1, 999, true)',
+		       ),
+		   ),
+		   $w->td({ -id => 'info_hostname_offset' }, '&nbsp;' ),
 	    ), "\n";
 
 	print
 	    $w->Tr({ -align => 'left' },
-		    $w->td(
-			$w->checkbox(
-			    -id => 'verbose',
-			    -name => 'verbose',
-			    -value => 'ON',
-			    -label => 'Verbose processing',
-			),
-		    ),
+		   $w->td(
+		       $w->checkbox(
+			   -id => 'verbose',
+			   -name => 'verbose',
+			   -value => 'ON',
+			   -label => 'Verbose processing',
+		       ),
+		   ),
 	    ), "\n";
 
 	print
 	    $w->Tr({ -align => 'left' },
-		    $w->td(
-			$w->submit(
-			    -name => 'submit',
-			    -label => 'Make It So'
-			),
-		    ),
+		   $w->td(
+		       $w->submit(
+			   -name => 'submit',
+			   -label => 'Make It So'
+		       ),
+		   ),
 	    ), "\n";
 
-	print $w->end_form(), "\n";
-	print $w->end_table (), "\n";
-	print $w->end_div({ id => 'outer' });
+	print
+	    $w->end_form(), "\n",
+	    $w->end_table(), "\n",
+	    $w->end_div({ id => 'outer' });
 
     } else {
 
 	print
 	    $w->br(), $w->br(),
 	    $w->div({ -align => 'center' },
-		     $w->h1( 'Permission denied' ),
-		     "\n"
+		    $w->h1( 'Permission denied' ),
+		    "\n"
 	    );
 
     }
 }
 
-sub getConfirmation( $$ ) {
+sub getConfirmation( $ ) {
     my $w = shift;
-    my $title = shift;
 
     my $returnValue = undef;
 
@@ -379,7 +385,9 @@ sub getConfirmation( $$ ) {
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
 	my $forward_domain = $w->param( 'forward_domain' );
 	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
+	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
 	my $reverse_domain = $w->param( 'reverse_domain' );
+	my $ipv4network = $w->param( 'ipv4network' );
 	my $ipv4start = $w->param( 'ipv4start' );
 	my $ipv4end = $w->param( 'ipv4end' );
 	my $hostname_base = $w->param( 'hostname_base' );
@@ -390,7 +398,6 @@ sub getConfirmation( $$ ) {
 	my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
 	my @bind = ();
 
-	my $ipv4network = undef;
 	my $addrCount = $ipv4start;
 	my $hostCount = $hostname_offset;
 
@@ -402,13 +409,12 @@ sub getConfirmation( $$ ) {
 	if ( $existing_forward_domain !~ /^-add new-/i ) {
 	    $forward_domain = $existing_forward_domain;
 	}
-	# they chose an existing reverse domain
-	if ( $existing_reverse_domain !~ /^-add new-/i ) {
-	    $reverse_domain = $existing_reverse_domain;
+	if ( $do_reverse_domain ) {
+	    # they chose an existing reverse domain
+	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
+		$reverse_domain = $existing_reverse_domain;
+	    }
 	}
-
-	( $ipv4network = $reverse_domain ) =~ s/(\d+)\.(\d+)\.(\d+)\.in-addr\.arpa/$3.$2.$1/;
-
 
 	# make the list of IP addresses and hostnames
 	# save the full IP address, the domain, and the numbered hostname
@@ -450,6 +456,18 @@ sub getConfirmation( $$ ) {
 		),
 		"\n";
 	}
+	if ( $do_reverse_domain ) {
+	    for ( my $r = 0; $r <= $#bind; $r++ ) {
+		my $record = $bind[$r];
+		next unless ( $record->{ipv4address} );
+		print
+		    $w->li(
+			$r, " PTR ",
+			$record->{hostname} . '.' . $record->{forward_domain},
+		    ),
+		    "\n";
+	    }
+	}
 	print
 	    $w->end_ul(),
 	    $w->end_div({-id => 'zonerecords' } ),
@@ -478,11 +496,11 @@ sub getConfirmation( $$ ) {
 		), "\n";
 	}
 
-	# print
-	#     $w->submit(
-	# 	-name => 'submit',
-	# 	-label => 'Looks Good'
-	#     ), "\n";
+	print
+	    $w->submit(
+		-name => 'submit',
+		-label => 'Looks Good'
+	    ), "\n";
 
 	print $w->end_form(), "\n";
 
@@ -502,9 +520,8 @@ sub getConfirmation( $$ ) {
     }
 }
 
-sub processFormData( $$ ) {
+sub processFormData( $ ) {
     my $w = shift;
-    my $title = shift;
 
     my $returnValue = undef;
 
@@ -518,7 +535,9 @@ sub processFormData( $$ ) {
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
 	my $forward_domain = $w->param( 'forward_domain' );
 	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
+	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
 	my $reverse_domain = $w->param( 'reverse_domain' );
+	my $ipv4network = $w->param( 'ipv4network' );
 	my $ipv4start = $w->param( 'ipv4start' );
 	my $ipv4end = $w->param( 'ipv4end' );
 	my $hostname_base = $w->param( 'hostname_base' );
@@ -529,10 +548,11 @@ sub processFormData( $$ ) {
 	my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
 	my @bind = ();
 
-	my $ipv4network = undef;
 	my $addrCount = $ipv4start;
 	my $hostCount = $hostname_offset;
 	my $response = undef;
+	my $okToAddA = undef;
+	my $okToAddPTR = undef;
 
 	my $ua = LWP::UserAgent->new;
 
@@ -540,18 +560,18 @@ sub processFormData( $$ ) {
 	if ( $existing_forward_domain !~ /^-add new-$/i ) {
 	    $forward_domain = $existing_forward_domain;
 	}
-	# they chose an existing reverse domain
-	if ( $existing_reverse_domain !~ /^-add new-/i ) {
-	    $reverse_domain = $existing_reverse_domain;
+	if ( $do_reverse_domain ) {
+	    # they chose an existing reverse domain
+	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
+		$reverse_domain = $existing_reverse_domain;
+	    }
 	}
-
-	( $ipv4network = $reverse_domain ) =~ s/(\d+)\.(\d+)\.(\d+)\.in-addr\.arpa/$3.$2.$1/;
 
 	# make the list of IP addresses and hostnames
 	# save the full IP address, the domain, and the numbered hostname
 	# use an array rather than a hash so we can preserve the order of entries
 	for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
-	    $bind[$addrCount]->{ipv4Address} = sprintf( '%s.%d', $ipv4network, $addrCount );
+	    $bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
 	    $bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
 	    $hostCount++;
 	}
@@ -571,22 +591,38 @@ sub processFormData( $$ ) {
 					    'ip=' . $ipv4network . '.' . $ipv4start,
 					    'trueowner=' . $owner
 					   ));
+	    if ( $response->{metadata}->{result} == 1 ) {
+		apiMessageDisplay( $w, $response, 'SUCCESS adding forward zone for domain ' . $reverse_domain );
+		$okToAddA = 1;
+	    } else {
+		apiMessageDisplay( $w, $response, 'ERROR adding forward zone for domain ' . $reverse_domain );
+	    }
 	}
 
-	# create a new reverse zone
-	if ( $newReverseZone ) {
-	    $response = authorizedRequest( $w, $ua, 'adddns',
-					   (
-					    'domain=' . $reverse_domain,
-					    'ip=' . $ipv4network . '.' . $ipv4start,
-					    'trueowner=' . $owner
-					   ));
-	}
+	# either we chose to not add a forward zone, or the zone
+	# addition succeeded and we can now add A records (and PTR
+	# records)
+	if ( ! $newForwardZone || $okToAddA ) {
 
-	if ( ! $newForwardZone || ( $newForwardZone && $response->{metadata}->{result} == 1 )) {
+	    # create a new reverse zone if so desired
+	    if ( $newReverseZone ) {
+		$response = authorizedRequest( $w, $ua, 'adddns',
+					       (
+						'domain=' . $reverse_domain,
+						'ip=' . $ipv4network . '.' . $ipv4start,
+						'template=in-addr.arpa',
+						'trueowner=' . $owner
+					       ));
+		if ( $response->{metadata}->{result} == 1 ) {
+		    $okToAddPTR = 1;
+		    apiMessageDisplay( $w, $response, 'SUCCESS adding reverse zone for domain ' . $reverse_domain );
+		} else {
+		    apiMessageDisplay( $w, $response, 'ERROR adding reverse zone for domain ' . $reverse_domain );
+		}
+	    }
 
 	    # finally, send the boatload off to cPanel,
-	    # creating A records and PTR records for each hostname
+	    # creating A records (and PTR records) for each hostname
 	    for ( my $count = 0; $count <= $#bind; $count++ ) {
 		my $record = $bind[$count];
 		next unless ( $record->{ipv4address} );
@@ -602,21 +638,27 @@ sub processFormData( $$ ) {
 						'type=A',
 					       ));
 
-		# create the PTR record if the A record addition succeeded
+		# create the PTR record if necessary, and if the A record addition succeeded
 		# see http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/XmlApiAddZoneRecordAddition
 		if ( $response->{metadata}->{result} == 1 ) {
-		    $response = authorizedRequest( $w, $ua, 'addzonerecord',
-						    'zone=' . Net::IP::ip_reverse( $record->{ipv4network}, 24, 4 ),
-						    'name=' . $count,
-						    'ptrdname=' . $record->{hostname} . $forward_domain,
-						    'type=PTR',
-						   );
-		    if ( $response->{metadata}->{result} != 1 ) {
-			apiMessageDisplay( $w, $response, 'ERROR: unable to add PTR record' );
-			last;
+		    apiMessageDisplay( $w, $response, 'SUCCESS: added A record ' . $record->{ipv4address} . ' for ' . $forward_domain );
+
+		    if ( $newReverseZone && $okToAddPTR ) {
+			$response = authorizedRequest( $w, $ua, 'addzonerecord',
+						       'zone=' . $reverse_domain,
+						       'name=' . $count,
+						       'ptrdname=' . $record->{hostname} . $forward_domain,
+						       'type=PTR',
+			    );
+			if ( $response->{metadata}->{result} == 1 ) {
+			    apiMessageDisplay( $w, $response, 'SUCCESS: added PTR record ' . $count . ' for ' . $forward_domain );
+			} else {
+			    apiMessageDisplay( $w, $response, 'ERROR: unable to add PTR record for ' . $forward_domain );
+			    last;
+			}
 		    }
 		} else {
-		    apiMessageDisplay( $w, $response, 'ERROR: unable to add A record' );
+		    apiMessageDisplay( $w, $response, 'ERROR: unable to add A record for ' . $forward_domain );
 		    last;
 		}
 	    }
@@ -665,6 +707,7 @@ sub authorizedRequest( $$$@ ) {
 	    $w->pre( Dumper( $response )), "\n" if ( $debug );
 
 	$jsonRef = processJSONresponse( $w, $action, $response->{'_content'} );
+	print $w->pre( Dumper( $jsonRef )), "\n" if ( $debug );
     } else {
 	print
 	    $w->p( 'ERROR: missing response from $ua->request()' ),
@@ -783,7 +826,6 @@ var global_valfield;	// retain valfield for timer thread
 //                  setfocus
 // Delayed focus setting to get around IE bug
 // --------------------------------------------
-
 function setFocusDelayed()
 {
     global_valfield.focus();
@@ -802,7 +844,6 @@ function setfocus(valfield)
 // Display warn/error message in HTML element.
 // commonCheck routine must have previously been called
 // --------------------------------------------
-
 function msg(fld,     // id of element to display message in
              msgtype, // class to give element ("warn" or "error")
              message) // string to display
@@ -831,7 +872,6 @@ function msg(fld,     // id of element to display message in
 //         false (validation failed) or
 //         proceed (do not know yet)
 // --------------------------------------------
-
 var proceed = 2;
 
 function commonCheck(valfield,   // element to be validated
@@ -872,7 +912,6 @@ function commonCheck(valfield,   // element to be validated
 // Validate if something has been entered
 // Returns true if so
 // --------------------------------------------
-
 function validatePresent(valfield,   // element to be validated
                          infofield ) // id of element to receive info/error msg
 {
@@ -888,7 +927,6 @@ function validatePresent(valfield,   // element to be validated
 // Validate an IPv4 address
 // Returns true if OK
 // --------------------------------------------
-
 function validateIPv4 (valfield,   // element to be validated
                       infofield,   // id of element to receive info/error msg
                       required)    // true if required
@@ -929,7 +967,6 @@ function validateIPv4 (valfield,   // element to be validated
 // Validate an IPv6 address
 // Returns true if OK
 // --------------------------------------------
-
 function validateIPv6 (valfield,   // element to be validated
                       infofield,   // id of element to receive info/error msg
                       required)    // true if required
@@ -957,7 +994,6 @@ function validateIPv6 (valfield,   // element to be validated
 // Validate a hostname
 // Returns true if OK
 // --------------------------------------------
-
 function validateHostName (valfield,   // element to be validated
                            infofield,  // id of element to receive info/error msg
                            required)   // true if required
@@ -985,11 +1021,51 @@ function validateHostName (valfield,   // element to be validated
 }
 
 // --------------------------------------------
+//             validateBaseAddress
+// This is a modification of validateIPv4
+// It only looks at three octets
+// Returns true if OK
+// --------------------------------------------
+function validateBaseAddress (valfield,   // element to be validated
+                              infofield,   // id of element to receive info/error msg
+                              required)    // true if required
+{
+    var stat = commonCheck (valfield, infofield, required);
+    if (stat != proceed) return stat;
+
+    var tfld = valfield.value.replace( /^\s+|\s+$/g, '' );
+
+    if ( /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test( tfld )) {
+	var parts = tfld.split(".");
+
+	if ( parseInt(parseFloat( parts[0] )) == 0 ) {
+	    msg ( infofield, "error", "ERROR: not a valid IPv4 network address (0?)" );
+	    setfocus( valfield );
+	    return false;
+	}
+
+	for ( var i=0; i < parts.length; i++ ) {
+	    if ( parseInt(parseFloat( parts[i] )) > 255) {
+		msg (infofield, "error", "ERROR: not a valid IPv4 octet (255?)");
+		setfocus(valfield);
+		return false;
+	    }
+	}
+    } else {
+	msg (infofield, "error", "ERROR: not a valid IPv4 network address (RE)");
+	setfocus(valfield);
+	return false;
+    }
+
+    msg (infofield, "info", "");
+    return true;
+}
+
+// --------------------------------------------
 //             validateReverseZone
 // Validate an in-addr.arpa zone name
 // Returns true if OK
 // --------------------------------------------
-
 function validateReverseZone (valfield,   // element to be validated
                                 infofield,  // id of element to receive info/error msg
                                 required)   // true if required
@@ -1021,7 +1097,6 @@ function validateReverseZone (valfield,   // element to be validated
 // Validate that a number is within a range
 // Returns true if OK
 // --------------------------------------------
-
 function validateNumericRange (valfield,   // element to be validated
                                infofield,  // id of element to receive info/error msg
                                rmin,       // minimum value in range
@@ -1055,7 +1130,6 @@ function validateNumericRange (valfield,   // element to be validated
 // make the form element in divName visible if the value passed is "-Add New-"
 // Returns true if OK
 // --------------------------------------------
-
 function processDomain (valfield,   // element to be validated
 			infofield,  // id of element to receive info/error msg
 			divName,    // id of div to hold new form element
@@ -1079,34 +1153,5 @@ function processDomain (valfield,   // element to be validated
     }
 
     return returnValue;
-}
-
-// get affirmation to commit this set of records
-function commit ( layerDiv )
-{
-    var response = confirm( "OK to commit these records?" );
-    var returnValue = false;
-
-    if (response == true) {
-	returnValue = true;
-	alert("You pressed OK!");
-	hidelayer( layerDiv );
-    } else {
-	alert("You pressed Cancel!");
-    }
-
-    return returnValue;
-}
-
-// toggle visibility of an HTML layer named in layerDiv
-function hidelayer ( layerDiv )
-{
-    var myLayer = document.getElementById(layerDiv).style.display;
-
-    if ( myLayer == "none" ) {
-	document.getElementById( layer ).style.display = "block";
-    } else {
-	document.getElementById( layer ).style.display = "none";
-    }
 }
 // }
