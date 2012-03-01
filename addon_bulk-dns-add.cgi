@@ -180,7 +180,7 @@ sub getFormData( $ ) {
 				      -id => 'existing_forward_domain',
 				      -name => 'existing_forward_domain',
 				      -values => \@forwardDomains,
-				      -onChange => 'processDomain(this, "info_existing_forward_domain", "forward_domain", true)',
+				      -onChange => 'showAddNew(this, "forward_domain_textfield")',
 				  ),
 			      ),
 			      $w->td({ -id => 'info_existing_forward_domain' }, '&nbsp;' ),
@@ -188,9 +188,9 @@ sub getFormData( $ ) {
 	    ), "\n";
 
 	# hide this <div> at first (style="display: none")
-	# the javascript function processDomain() makes this visible and invisible
+	# the javascript function showAddNew() makes this visible and invisible
 	print
-	    $w->div({ -id => 'forward_domain', -style => 'display: none' },
+	    $w->div({ -id => 'forward_domain_textfield', -style => 'display: none' },
 		    $w->table ({ -border => '0', -id => 't2' },
 			       $w->Tr({ -align => 'left' },
 				      $w->th({ -align => 'right' }, 'New Domain:&nbsp;' ),
@@ -210,48 +210,50 @@ sub getFormData( $ ) {
 
 	### in-addr.arpa (reverse) domains
 	print
-	    $w->table ({ -border => '0', id => 't3' },
-		       $w->Tr({ -align => 'left' },
-			      $w->td(
-				  $w->checkbox(
-				      -id => 'do_reverse_domain',
-				      -name => 'do_reverse_domain',
-				      -checked => 0,
-				      -value => 'ON',
-				      -label => '',
-				  )),
-			      $w->th({ -align => 'right' }, 'Choose a reverse domain (check to include):&nbsp;' ),
-			      $w->td(
-				  $w->popup_menu(
-				      -id => 'existing_reverse_domain',
-				      -name => 'existing_reverse_domain',
-				      -values => \@inaddrDomains,
-				      -onChange => 'processDomain(this, "info_existing_reverse_domain", "reverse_domain", true)',
-				  ),
-			      ),
-			      $w->td({ -id => 'info_existing_reverse_domain' }, '&nbsp;' ),
-		       ),
-	    ), "\n";
+	    $w->checkbox(
+		-id => 'do_reverse_domain',
+		-name => 'do_reverse_domain',
+		-checked => 0,
+		-label => 'Add reverse domain records',
+		-onClick => 'setVisibility(this, "reverse_domain")',
+	    );
 
 	# hide this <div> at first (style="display: none")
-	# the javascript function processDomain() makes this visible and invisible
+	# the javascript function showAddNew() makes this visible and invisible
 	print
 	    $w->div({ -id => 'reverse_domain', -style => 'display: none' },
-		    $w->table ({ -border => '0', -id => 't4' },
+		    $w->table ({ -border => '0', id => 't3' },
 			       $w->Tr({ -align => 'left' },
-				      $w->th({ -align => 'right' }, 'New Reverse Domain:&nbsp;' ),
+				      $w->th({ -align => 'right' }, 'Choose a reverse domain (check to include):&nbsp;' ),
 				      $w->td(
-					  $w->textfield(
-					      -id => 'reverse_domain',
-					      -name => 'reverse_domain',
-					      -size => '32',
-					      -maxlength => '56',
-					      -onChange => 'validateReverseZone(this, "info_reverse_domain", true)'
+					  $w->popup_menu(
+					      -id => 'existing_reverse_domain',
+					      -name => 'existing_reverse_domain',
+					      -values => \@inaddrDomains,
+					      -onChange => 'showAddNew(this, "reverse_domain_textfield")',
 					  ),
 				      ),
-				      $w->td({ -id => 'info_reverse_domain' }, '&nbsp;' ),
+				      $w->td({ -id => 'info_existing_reverse_domain' }, '&nbsp;' ),
 			       ),
-		    ), "\n"
+		    ),
+		    "\n",
+		    $w->div({ -id => 'reverse_domain_textfield', -style => 'display: none' },
+			    $w->table ({ -border => '0', -id => 't4' },
+				       $w->Tr({ -align => 'left' },
+					      $w->th({ -align => 'right' }, 'New Reverse Domain:&nbsp;' ),
+					      $w->td(
+						  $w->textfield(
+						      -id => 'reverse_domain',
+						      -name => 'reverse_domain',
+						      -size => '32',
+						      -maxlength => '56',
+						      -onChange => 'validateReverseZone(this, "info_reverse_domain", true)'
+						  ),
+					      ),
+					      $w->td({ -id => 'info_reverse_domain' }, '&nbsp;' ),
+				       ),
+			    ), "\n"
+		    )
 	    );
 
 	print
@@ -421,8 +423,9 @@ sub getConfirmation( $ ) {
 	# use an array rather than a hash so we can preserve the order of entries
 	for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
 	    $bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
-	    $bind[$addrCount]->{forward_domain} = sprintf( '%s.', $forward_domain );
+	    $bind[$addrCount]->{forward_domain} = $forward_domain;
 	    $bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
+	    $bind[$addrCount]->{fqdn} = sprintf( '%s-%d.%s.', $hostname_base, $hostCount, $forward_domain );
 	    $hostCount++;
 	}
 	if ( $debug || $verbose ) {
@@ -452,7 +455,7 @@ sub getConfirmation( $ ) {
 	    print
 		$w->li(
 		    $record->{ipv4address}, " A ",
-		    $record->{hostname} . '.' . $record->{forward_domain},
+		    $record->{fqdn},
 		),
 		"\n";
 	}
@@ -463,7 +466,7 @@ sub getConfirmation( $ ) {
 		print
 		    $w->li(
 			$r, " PTR ",
-			$record->{hostname} . '.' . $record->{forward_domain},
+			$record->{fqdn},
 		    ),
 		    "\n";
 	    }
@@ -513,6 +516,7 @@ sub getConfirmation( $ ) {
 
     	print
     	    $w->br(), $w->br(),
+
     	    $w->div({ -align => 'center' },
     		     $w->h1( 'Permission denied' ),
     		     "\n"
@@ -528,7 +532,7 @@ sub processFormData( $ ) {
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
     # for details.
-    if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    # if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
 
 	# get all the parameters from the completed form
 	my $owner = $w->param( 'owner' );
@@ -552,7 +556,7 @@ sub processFormData( $ ) {
 	my $hostCount = $hostname_offset;
 	my $response = undef;
 	my $okToAddA = undef;
-	my $okToAddPTR = undef;
+	my $okToAddPTR = 1;
 
 	my $ua = LWP::UserAgent->new;
 
@@ -572,7 +576,9 @@ sub processFormData( $ ) {
 	# use an array rather than a hash so we can preserve the order of entries
 	for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
 	    $bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
+	    $bind[$addrCount]->{forward_domain} = $forward_domain;
 	    $bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
+	    $bind[$addrCount]->{fqdn} = sprintf( '%s-%d.%s.', $hostname_base, $hostCount, $forward_domain );
 	    $hostCount++;
 	}
 	if ( $debug || $verbose ) {
@@ -614,10 +620,10 @@ sub processFormData( $ ) {
 						'trueowner=' . $owner
 					       ));
 		if ( $response->{metadata}->{result} == 1 ) {
-		    $okToAddPTR = 1;
 		    apiMessageDisplay( $w, $response, 'SUCCESS adding reverse zone for domain ' . $reverse_domain );
 		} else {
 		    apiMessageDisplay( $w, $response, 'ERROR adding reverse zone for domain ' . $reverse_domain );
+		    $okToAddPTR = 0;
 		}
 	    }
 
@@ -633,7 +639,7 @@ sub processFormData( $ ) {
 		$response = authorizedRequest( $w, $ua, 'addzonerecord',
 					       (
 						'zone=' . $forward_domain,
-						'name=' . $record->{hostname} . '.',
+						'name=' . $record->{fqdn},
 						'address=' . $record->{ipv4address},
 						'type=A',
 					       ));
@@ -643,17 +649,17 @@ sub processFormData( $ ) {
 		if ( $response->{metadata}->{result} == 1 ) {
 		    apiMessageDisplay( $w, $response, 'SUCCESS: added A record ' . $record->{ipv4address} . ' for ' . $forward_domain );
 
-		    if ( $newReverseZone && $okToAddPTR ) {
+		    if ( $do_reverse_domain && $okToAddPTR ) {
 			$response = authorizedRequest( $w, $ua, 'addzonerecord',
 						       'zone=' . $reverse_domain,
 						       'name=' . $count,
-						       'ptrdname=' . $record->{hostname} . $forward_domain,
+						       'ptrdname=' . $record->{fqdn},
 						       'type=PTR',
 			    );
 			if ( $response->{metadata}->{result} == 1 ) {
-			    apiMessageDisplay( $w, $response, 'SUCCESS: added PTR record ' . $count . ' for ' . $forward_domain );
+			    apiMessageDisplay( $w, $response, 'SUCCESS: added PTR record ' . $count . ' for ' . $reverse_domain );
 			} else {
-			    apiMessageDisplay( $w, $response, 'ERROR: unable to add PTR record for ' . $forward_domain );
+			    apiMessageDisplay( $w, $response, 'ERROR: unable to add PTR record for ' . $reverse_domain );
 			    last;
 			}
 		    }
@@ -665,15 +671,15 @@ sub processFormData( $ ) {
 	} else {
 	    apiMessageDisplay( $w, $response, 'ERROR adding zone for domain ' . $forward_domain );
 	}
-    } else {
+    # } else {
 
-    	print
-    	    $w->br(), $w->br(),
-    	    $w->div({ -align => 'center' },
-    		     $w->h1( 'Permission denied' ),
-    		     "\n"
-    	    );
-    }
+    # 	print
+    # 	    $w->br(), $w->br(),
+    # 	    $w->div({ -align => 'center' },
+    # 		     $w->h1( 'Permission denied' ),
+    # 		     "\n"
+    # 	    );
+    # }
 }
 
 # return a hash reference to response data from a request
@@ -718,6 +724,8 @@ sub authorizedRequest( $$$@ ) {
     $jsonRef;
 }
 
+# parse the JSON response from the API call and
+# normalize it to something we can deal with
 sub processJSONresponse( $$$ ) {
     my $w = shift;
     my $action = shift;
@@ -727,20 +735,33 @@ sub processJSONresponse( $$$ ) {
 
     if ( $response ) {
 	my $json = JSON::PP->new();
-	my $completionMessage = undef;
 
 	$jsonRef = $json->decode( $response );
 
 	if ( $jsonRef ) {
 
-	    if ( $jsonRef->{metadata}->{result} == 1 ) {
-		$completionMessage = 'Complete: ' . $action . ' succeded';
-	    } else {
-		$completionMessage = 'ERROR: ' . $action . ' failed';
-	    }
+	    if ( $jsonRef->{metadata} ) {
 
-	    if ( $w->param('verbose') || $jsonRef->{metadata}->{result} != 1 ) {
-		apiMessageDisplay( $w, $response, $completionMessage );
+		if ( $w->param('verbose') || $jsonRef->{metadata}->{result} != 1 ) {
+		    print $w->pre( Dumper( $jsonRef )), "\n";
+		}
+
+	    } elsif ( $jsonRef->{result} ) {
+
+		if ( $jsonRef->{result}[0]->{status} ) {
+		    $jsonRef->{metadata}->{result} = $jsonRef->{result}[0]->{status};
+		    $jsonRef->{metadata}->{reason} = 'API Success';
+		    $jsonRef->{metadata}->{statusmsg} = $jsonRef->{result}[0]->{statusmsg};
+		} else {
+		    $jsonRef->{metadata}->{result} = $jsonRef->{result}[0]->{status};
+		    $jsonRef->{metadata}->{reason} = 'API Error';
+		    $jsonRef->{metadata}->{statusmsg} = $jsonRef->{result}[0]->{statusmsg};
+		}
+
+	    } else {
+		print
+		    $w->p( 'ERROR: unknown JSON structure in $response:' ), "\n",
+		    $w->pre( Dumper( $jsonRef )), "\n";
 	    }
 	} else {
 	    print $w->p( 'ERROR: unable to decode JSON from ', $response ), "\n";
@@ -767,7 +788,7 @@ sub apiMessageDisplay ( $$$ ) {
 		$w->br(),
 		'Reason: ', $response->{metadata}->{reason},
 		$w->br(),
-		$response->{metadata}->{statusmsg},
+		$w->pre( $response->{metadata}->{statusmsg}, "\n" ),
 	    ), "\n";
     }
 }
@@ -1126,32 +1147,39 @@ function validateNumericRange (valfield,   // element to be validated
 }
 
 // --------------------------------------------
-//             processDomain
+//             showAddNew
 // make the form element in divName visible if the value passed is "-Add New-"
-// Returns true if OK
 // --------------------------------------------
-function processDomain (valfield,   // element to be validated
-			infofield,  // id of element to receive info/error msg
-			divName,    // id of div to hold new form element
-			required)   // true if required
+function showAddNew (valfield,   // element to be validated
+		     divName)    // id of div to hold new form element
 {
-    var stat = commonCheck (valfield, infofield, required);
-    var returnValue = true;
+    var element = document.getElementById( divName );
 
-    if (stat != proceed) return stat;
-
-    var tfld = valfield.value.replace( /^\s+|\s+$/g, '' );
-
-    var divElement = document.getElementById(divName);
-
-    if ( /^-Add New-$/.test( tfld )) {
+    if ( /^-Add New-$/.test( valfield.value )) {
 	// set the element style to "visible"
-	    divElement.style.display = "block";
+	element.style.display = "block";
     } else {
 	// set the element style to "invisible"
-	    divElement.style.display = "none";
+	element.style.display = "none";
+    }
+}
+
+// --------------------------------------------
+//             setVisibility
+// set visibility of divName based on the
+// value of valfield
+// --------------------------------------------
+function setVisibility ( valfield, divName )
+{
+    var element = document.getElementById( divName );
+
+    if ( valfield.checked ) {
+	// set the element style to "visible"
+	element.style.display = "block";
+    } else {
+	// set the element style to "invisible"
+	element.style.display = "none";
     }
 
-    return returnValue;
 }
 // }
