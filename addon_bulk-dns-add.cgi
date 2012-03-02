@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-#WHMADDON:bulk-dns-add:Bulk DNS Add (zonemaker)
+#WHMADDON:bulk-dns-add:Bulk DNS Generate (zonemaker)
 #ACLS:create-dns
 
 #      _|_|    _|                        _|                                                    
@@ -30,17 +30,19 @@ use Cpanel::StringFunc      ();
 use Cpanel::Config          ();
 use Whostmgr::HTMLInterface ();
 use Whostmgr::ACLS ();
+use Text::Wrap;
 
 use Net::IP qw(:PROC);
 
 my $debug = 0;
 
 use constant BASE_URL => 'http://localhost:2086/json-api';
+use constant DEFAULT_COMMENT => 'Comments for this block of addresses. This will be placed above the block of addresses.';
 
 sub main();
 sub getFormData( $ );
 sub getConfirmation( $ );
-sub processFormData( $ );
+# sub processFormData( $ );
 sub authorizedRequest( $$$@ );
 sub processJSONresponse( $$$ );
 sub apiMessageDisplay ( $$$ );
@@ -60,17 +62,17 @@ sub main() {
     print
 	$w->header( -expires => '-1D' ),
 	$w->start_html(
-	    -title => 'Bulk DNS Add (zonemaker)',
+	    -title => 'Bulk DNS Generate (zonemaker)',
 	    -script => join( "", @javaScript ),
 	);
 
     Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_bulk-dns-add.cgi' );
 
 
-    if ( $w->param( 'affirmed' )) {
-	processFormData( $w );
-    } elsif ( $w->param( 'hostname_offset' )) {
+    if ( $w->param( 'hostname_offset' )) {
 	getConfirmation( $w );
+    # } elsif ( $w->param( 'affirmed' )) {
+    # 	processFormData( $w );
     } else {
 	getFormData( $w );
     }
@@ -92,20 +94,8 @@ sub getFormData( $ ) {
 	my $ua = LWP::UserAgent->new;
 
 	print
-	    $w->h1( 'Bulk DNS Addition (formerly known as zonemaker)' ), "\n",
-	    $w->p( 'Use this form to add a group of hosts and addresses to a DNS zone for a reseller.' );
-
-	# $owners is the JSON data structure returned from the query
-	# @owners is the array containing a sorted list of unique owners
-	my $owners = authorizedRequest( $w, $ua, 'listaccts', ( 'api.version=1', 'searchtype=owner', ));
-	my @owners = ();
-
-	# map/reduce: map() gives an array of owner hashes,
-	# sort(keys()) gives an array of owners
-	if ( $owners ) {
-	    @owners = map( { $_->{owner} } @{$owners->{data}->{acct}} );
-	    @owners = sort( keys( %{{ map { $_ => 1 } @owners }} ));
-	}
+	    $w->h1( 'Bulk DNS Generator (formerly known as zonemaker)' ), "\n",
+	    $w->p( 'Use this form to generate a set of entries to add to a DNS zone.' );
 
 	# $domains is the JSON data structure returned from the query
 	# @domains is the array containing a sorted list of unique domains
@@ -152,23 +142,7 @@ sub getFormData( $ ) {
 
 	print
 	    $w->start_div({ -id => 'outer' }),
-	    $w->start_table ({ -border => '0' }),
 	    "\n";
-
-	print
-	    $w->Tr({ -align => 'left' },
-		   $w->th({ -align => 'right' }, 'Owner:&nbsp;' ),
-		   $w->td(
-		       $w->popup_menu(
-			   -id => 'owner',
-			   -name => 'owner',
-			   -values => \@owners,
-		       ),
-		   ),
-		   $w->td({ -id => 'info_owners' }, '' ),
-	    ), "\n";
-
-	print $w->end_table (), "\n";
 
 	### forward domains
 	print
@@ -335,6 +309,23 @@ sub getFormData( $ ) {
 
 	print
 	    $w->Tr({ -align => 'left' },
+		   $w->th({ -align => 'right' }, 'Comments:&nbsp;', $w->br(), '(comments will be wrapped and set off with ";")' ),
+		   $w->td(
+		       $w->textarea(
+			   -id => 'comment',
+			   -name => 'comment',
+			   -default => DEFAULT_COMMENT,
+			   -rows => 4,
+			   -columns => 76,
+			   -onFocus => 'if (this.value == this.defaultValue) {this.value = "";}',
+			   -onBlur => 'if (this.value == "") {this.value="' . DEFAULT_COMMENT . '";}'
+		       ),
+		   ),
+		   $w->td({ -id => 'info_comment' }, '&nbsp;' ),
+	    ), "\n";
+
+	print
+	    $w->Tr({ -align => 'left' },
 		   $w->td(
 		       $w->checkbox(
 			   -id => 'verbose',
@@ -351,6 +342,14 @@ sub getFormData( $ ) {
 		       $w->submit(
 			   -name => 'submit',
 			   -label => 'Make It So'
+		       ),
+		   ),
+		   $w->td(
+		       $w->button(
+			   -name => 'Reset',
+			   -value => 'Reset',
+			   -label => 'Reset Form',
+			   -onClick => 'this.form.reset()',
 		       ),
 		   ),
 	    ), "\n";
@@ -377,309 +376,127 @@ sub getConfirmation( $ ) {
 
     my $returnValue = undef;
 
-    # Ensure they have proper access before doing anything else. See
-    # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
-    # for details.
-    if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    # get all the parameters from the completed form
+    my $owner = $w->param( 'owner' );
+    my $existing_forward_domain = $w->param( 'existing_forward_domain' );
+    my $forward_domain = $w->param( 'forward_domain' );
+    my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
+    my $do_reverse_domain = $w->param( 'do_reverse_domain' );
+    my $reverse_domain = $w->param( 'reverse_domain' );
+    my $ipv4network = $w->param( 'ipv4network' );
+    my $ipv4start = $w->param( 'ipv4start' );
+    my $ipv4end = $w->param( 'ipv4end' );
+    my $hostname_base = $w->param( 'hostname_base' );
+    my $hostname_offset = $w->param( 'hostname_offset' );
+    my $comment = $w->param( 'comment' );
+    my $verbose = $w->param( 'verbose' );
 
-	# get all the parameters from the completed form
-	my $owner = $w->param( 'owner' );
-	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
-	my $forward_domain = $w->param( 'forward_domain' );
-	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
-	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
-	my $reverse_domain = $w->param( 'reverse_domain' );
-	my $ipv4network = $w->param( 'ipv4network' );
-	my $ipv4start = $w->param( 'ipv4start' );
-	my $ipv4end = $w->param( 'ipv4end' );
-	my $hostname_base = $w->param( 'hostname_base' );
-	my $hostname_offset = $w->param( 'hostname_offset' );
-	my $verbose = $w->param( 'verbose' );
+    my $newForwardZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
+    my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
+    my @bind = ();
 
-	my $newForwardZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
-	my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
-	my @bind = ();
+    my $addrCount = $ipv4start;
+    my $hostCount = $hostname_offset;
 
-	my $addrCount = $ipv4start;
-	my $hostCount = $hostname_offset;
+    my %params = $w->Vars();
+    my $formatString = undef;
+    my @comment = ();
 
-	my %params = $w->Vars();
+    my @output = ();
 
-	my $ua = LWP::UserAgent->new;
+    my $ua = LWP::UserAgent->new;
 
-	# they chose an existing domain
-	if ( $existing_forward_domain !~ /^-add new-/i ) {
-	    $forward_domain = $existing_forward_domain;
-	}
-	if ( $do_reverse_domain ) {
-	    # they chose an existing reverse domain
-	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
-		$reverse_domain = $existing_reverse_domain;
-	    }
-	}
-
-	# make the list of IP addresses and hostnames
-	# save the full IP address, the domain, and the numbered hostname
-	# use an array rather than a hash so we can preserve the order of entries
-	for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
-	    $bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
-	    $bind[$addrCount]->{forward_domain} = $forward_domain;
-	    $bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
-	    $bind[$addrCount]->{fqdn} = sprintf( '%s-%d.%s.', $hostname_base, $hostCount, $forward_domain );
-	    $hostCount++;
-	}
-	if ( $debug || $verbose ) {
-	    print
-		$w->div({ -id => 'debugzonerecords' },
-		    $w->p( 'DEBUG: @bind is:' ), "\n",
-		    $w->pre( Dumper( @bind )), "\n",
-		);
-	}
-
-	# display the new records and await confirmation to proceed
-	if ( $newForwardZone ) {
-	    print
-		$w->h1( { -style => 'color:red' },  'Adding new forward zone' ),
-		$w->p( 'Domain: ', $w->i( $forward_domain )), "\n";
-	}
-	if ( $newReverseZone ) {
-	    print
-		$w->h1( { -style => 'color:red' },  'Adding new reverse zone' ),
-		$w->p( 'in-addr.arpa Domain: ', $w->i( $reverse_domain )), "\n";
-	}
-	print
-	    $w->start_div({ -id => 'zonerecords' , -style => 'display: block'} ), "\n",
-	    $w->start_ul({ -style => 'list-style-type: none; padding: 5px; margin: 5em;' }), "\n";
-	foreach my $record ( @bind ) {
-	    next unless ( $record->{ipv4address} );
-	    print
-		$w->li(
-		    $record->{ipv4address}, " A ",
-		    $record->{fqdn},
-		),
-		"\n";
-	}
-	if ( $do_reverse_domain ) {
-	    for ( my $r = 0; $r <= $#bind; $r++ ) {
-		my $record = $bind[$r];
-		next unless ( $record->{ipv4address} );
-		print
-		    $w->li(
-			$r, " PTR ",
-			$record->{fqdn},
-		    ),
-		    "\n";
-	    }
-	}
-	print
-	    $w->end_ul(),
-	    $w->end_div({-id => 'zonerecords' } ),
-	    "\n";
-
-	print
-	    $w->start_form(
-		-name => 'commit_records',
-		-method => 'POST',
-		-action => '/cgi/addon_bulk-dns-add.cgi',
-	    ), "\n";
-	print
-	    $w->hidden(
-		-name => 'affirmed',
-		-default => '1',
-	    ),
-	    "\n";
-
-	# save the parameters from the previous form
-	foreach my $p ( sort( keys( %params ))) {
-	    next if ( $p =~ /submit/ );
-	    print
-		$w->hidden(
-		    -name => $p,
-		    -default => $w->param( $p )
-		), "\n";
-	}
-
-	print
-	    $w->submit(
-		-name => 'submit',
-		-label => 'Looks Good'
-	    ), "\n";
-
-	print $w->end_form(), "\n";
-
-	print
-	    $w->p(
-		'Click your browser\'s Back button if you need to make changes.'
-	    ), "\n";
-
-    } else {
-
-    	print
-    	    $w->br(), $w->br(),
-
-    	    $w->div({ -align => 'center' },
-    		     $w->h1( 'Permission denied' ),
-    		     "\n"
-    	    );
+    # they chose an existing domain
+    if ( $existing_forward_domain !~ /^-add new-/i ) {
+	$forward_domain = $existing_forward_domain;
     }
-}
-
-sub processFormData( $ ) {
-    my $w = shift;
-
-    my $returnValue = undef;
-
-    # Ensure they have proper access before doing anything else. See
-    # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
-    # for details.
-    # if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
-
-	# get all the parameters from the completed form
-	my $owner = $w->param( 'owner' );
-	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
-	my $forward_domain = $w->param( 'forward_domain' );
-	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
-	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
-	my $reverse_domain = $w->param( 'reverse_domain' );
-	my $ipv4network = $w->param( 'ipv4network' );
-	my $ipv4start = $w->param( 'ipv4start' );
-	my $ipv4end = $w->param( 'ipv4end' );
-	my $hostname_base = $w->param( 'hostname_base' );
-	my $hostname_offset = $w->param( 'hostname_offset' );
-	my $verbose = $w->param( 'verbose' );
-
-	my $newForwardZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
-	my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
-	my @bind = ();
-
-	my $addrCount = $ipv4start;
-	my $hostCount = $hostname_offset;
-	my $response = undef;
-	my $okToAddA = undef;
-	my $okToAddPTR = 1;
-
-	my $ua = LWP::UserAgent->new;
-
-	# they chose an existing domain
-	if ( $existing_forward_domain !~ /^-add new-$/i ) {
-	    $forward_domain = $existing_forward_domain;
+    if ( $do_reverse_domain ) {
+	# they chose an existing reverse domain
+	if ( $existing_reverse_domain !~ /^-add new-/i ) {
+	    $reverse_domain = $existing_reverse_domain;
 	}
-	if ( $do_reverse_domain ) {
-	    # they chose an existing reverse domain
-	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
-		$reverse_domain = $existing_reverse_domain;
-	    }
-	}
+    }
 
-	# make the list of IP addresses and hostnames
-	# save the full IP address, the domain, and the numbered hostname
-	# use an array rather than a hash so we can preserve the order of entries
-	for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
-	    $bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
-	    $bind[$addrCount]->{forward_domain} = $forward_domain;
-	    $bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
-	    $bind[$addrCount]->{fqdn} = sprintf( '%s-%d.%s.', $hostname_base, $hostCount, $forward_domain );
-	    $hostCount++;
-	}
-	if ( $debug || $verbose ) {
-	    print
-		$w->div({ -id => 'debugzonerecords' },
+    $formatString = '%-' . length( $hostname_base . '-xxx.' . $forward_domain . '.' ) . "s\t600\tIN\t%s\t%s\n";
+
+    # make the list of IP addresses and hostnames
+    # save the full IP address, the domain, and the numbered hostname
+    # use an array rather than a hash so we can preserve the order of entries
+    for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
+	$bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
+	$bind[$addrCount]->{forward_domain} = $forward_domain;
+	$bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
+	$bind[$addrCount]->{fqdn} = sprintf( '%s-%d.%s.', $hostname_base, $hostCount, $forward_domain );
+	$hostCount++;
+    }
+    if ( $debug || $verbose ) {
+	print
+	    $w->div({ -id => 'debugzonerecords' },
 		    $w->p( 'DEBUG: @bind is:' ), "\n",
 		    $w->pre( Dumper( @bind )), "\n",
+	    );
+    }
+
+    # strip any hand-entered comment symbols, the default comment, and save the wrapped comment
+    my $default_comment = DEFAULT_COMMENT;
+    $comment =~ s/^$default_comment$//;
+    @comment = split( ' ', $comment );
+    push ( @output, ( wrap( '; ', '; ', grep( !/^;$/, @comment )), "\n" ));
+
+    foreach my $record ( @bind ) {
+	next unless ( $record->{ipv4address} );
+
+	push( @output,
+	      sprintf(
+		  $formatString,
+		  $record->{fqdn},
+		  'A',
+		  $record->{ipv4address}
+	      )
+	    );
+    }
+
+    if ( $do_reverse_domain ) {
+
+	$formatString = "%-3d\t\t600\tIN\t%s\t%s\n";
+
+	for ( my $r = 0; $r <= $#bind; $r++ ) {
+	    my $record = $bind[$r];
+	    next unless ( $record->{ipv4address} );
+	    push( @output,
+		  sprintf(
+		      $formatString,
+		      $r,
+		      'PTR',
+		      $record->{fqdn}
+		  )
 		);
 	}
+    }
 
-	# create a new forward zone
-	if ( $newForwardZone ) {
-	    $response = authorizedRequest( $w, $ua, 'adddns',
-					   (
-					    'domain=' . $forward_domain,
-					    'ip=' . $ipv4network . '.' . $ipv4start,
-					    'trueowner=' . $owner
-					   ));
-	    if ( $response->{metadata}->{result} == 1 ) {
-		apiMessageDisplay( $w, $response, 'SUCCESS adding forward zone for domain ' . $reverse_domain );
-		$okToAddA = 1;
-	    } else {
-		apiMessageDisplay( $w, $response, 'ERROR adding forward zone for domain ' . $reverse_domain );
-	    }
-	}
+    print
+	$w->start_div({ -id => 'zonerecords' , -style => 'display: block'} ), "\n",
+	# $w->start_pre({ -style => 'list-style-type: none; padding: 5px; margin: 5em;' }), "\n";
+	$w->start_form(
+	    -name => 'output'
+	), "\n";
+    print
+	$w->textarea(
+	    {
+		-id => 'result',
+		-name => 'result',
+		-rows => 255,
+		-columns => 80,
+		# -readonly => 1,
+		-default => join( '', @output ),
+	    },
+	), "\n";
 
-	# either we chose to not add a forward zone, or the zone
-	# addition succeeded and we can now add A records (and PTR
-	# records)
-	if ( ! $newForwardZone || $okToAddA ) {
-
-	    # create a new reverse zone if so desired
-	    if ( $newReverseZone ) {
-		$response = authorizedRequest( $w, $ua, 'adddns',
-					       (
-						'domain=' . $reverse_domain,
-						'ip=' . $ipv4network . '.' . $ipv4start,
-						'template=in-addr.arpa',
-						'trueowner=' . $owner
-					       ));
-		if ( $response->{metadata}->{result} == 1 ) {
-		    apiMessageDisplay( $w, $response, 'SUCCESS adding reverse zone for domain ' . $reverse_domain );
-		} else {
-		    apiMessageDisplay( $w, $response, 'ERROR adding reverse zone for domain ' . $reverse_domain );
-		    $okToAddPTR = 0;
-		}
-	    }
-
-	    # finally, send the boatload off to cPanel,
-	    # creating A records (and PTR records) for each hostname
-	    for ( my $count = 0; $count <= $#bind; $count++ ) {
-		my $record = $bind[$count];
-		next unless ( $record->{ipv4address} );
-
-		$response = undef;
-
-		# create the A record
-		$response = authorizedRequest( $w, $ua, 'addzonerecord',
-					       (
-						'zone=' . $forward_domain,
-						'name=' . $record->{fqdn},
-						'address=' . $record->{ipv4address},
-						'type=A',
-					       ));
-
-		# create the PTR record if necessary, and if the A record addition succeeded
-		# see http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/XmlApiAddZoneRecordAddition
-		if ( $response->{metadata}->{result} == 1 ) {
-		    apiMessageDisplay( $w, $response, 'SUCCESS: added A record ' . $record->{ipv4address} . ' for ' . $forward_domain );
-
-		    if ( $do_reverse_domain && $okToAddPTR ) {
-			$response = authorizedRequest( $w, $ua, 'addzonerecord',
-						       'zone=' . $reverse_domain,
-						       'name=' . $count,
-						       'ptrdname=' . $record->{fqdn},
-						       'type=PTR',
-			    );
-			if ( $response->{metadata}->{result} == 1 ) {
-			    apiMessageDisplay( $w, $response, 'SUCCESS: added PTR record ' . $count . ' for ' . $reverse_domain );
-			} else {
-			    apiMessageDisplay( $w, $response, 'ERROR: unable to add PTR record for ' . $reverse_domain );
-			    last;
-			}
-		    }
-		} else {
-		    apiMessageDisplay( $w, $response, 'ERROR: unable to add A record for ' . $forward_domain );
-		    last;
-		}
-	    }
-	} else {
-	    apiMessageDisplay( $w, $response, 'ERROR adding zone for domain ' . $forward_domain );
-	}
-    # } else {
-
-    # 	print
-    # 	    $w->br(), $w->br(),
-    # 	    $w->div({ -align => 'center' },
-    # 		     $w->h1( 'Permission denied' ),
-    # 		     "\n"
-    # 	    );
-    # }
+    print
+	end_form(),
+	# $w->end_pre(), "\n",
+	$w->end_div({-id => 'zonerecords' } ),
+	"\n";
 }
 
 # return a hash reference to response data from a request
@@ -801,19 +618,23 @@ addon_bulk-dns-add.cgi
 
 =head1 SYNOPSIS
 
-Add a new, or add records to an exising zone for cPanel BIND, automatically filling in the IP addresses and host names based on a template with a starting and ending address.
+Generate a list of hostnames and IP addresses in BIND zone file format. The list is suitable for copying and pasting into an zone file editor session.
 
 =head1 DESCRIPTION
 
-addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template", a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of creating the zone.
+addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template", a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of generating the zone lines. The user must then copy the desired lines and paste them into an editor session in which they have open the desired BIND zone file.
+
+=head1 FILES
+
+=over 8
+
+=item I</usr/local/cpanel/whostmgr/docroot/cgi/addon_bulk-dns-add.cgi> - the CGI script
 
 =head1 SEE ALSO
 
 =over 8
 
 =item B<WHM Documentation>: http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins
-
-=item B<init-zone.cgi>, the companion script that performs the data manipulation and loads the zone files
 
 =back
 
