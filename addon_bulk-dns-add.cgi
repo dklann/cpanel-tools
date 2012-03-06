@@ -14,7 +14,8 @@ BEGIN {
     unshift @INC,
     '/usr/local/cpanel',
     '/usr/local/cpanel/whostmgr/docroot/cgi',
-    '/usr/local/cpanel/cpaddons';
+    '/usr/local/cpanel/cpaddons',
+    '/home/dklann/perl5/lib/perl5';
 }
 
 use strict;
@@ -31,21 +32,27 @@ use Cpanel::Config          ();
 use Whostmgr::HTMLInterface ();
 use Whostmgr::ACLS ();
 use Text::Wrap;
+use Text::Diff::FormattedHTML;
+use File::stat;
 
 use Net::IP qw(:PROC);
 
-my $debug = 0;
+my $debug = 1;
 
 use constant BASE_URL => 'http://localhost:2086/json-api';
 use constant DEFAULT_COMMENT => 'Comments for this block of addresses. This will be placed above the block of addresses.';
+use constant NAMEDIR => '/var/named';
 
 sub main();
 sub getFormData( $ );
 sub getConfirmation( $ );
-# sub processFormData( $ );
+sub processFormData( $ );
+sub commitChanges( $ );
 sub authorizedRequest( $$$@ );
 sub processJSONresponse( $$$ );
 sub apiMessageDisplay ( $$$ );
+sub newZoneFile ( $$$ );
+sub addOrReplace( $$$$ );
 
 # run it
 main;
@@ -64,15 +71,22 @@ sub main() {
 	$w->start_html(
 	    -title => 'Bulk DNS Generate (zonemaker)',
 	    -script => join( "", @javaScript ),
+	    -style => { -type => 'text/css', -code => diff_css() },
 	);
 
     Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_bulk-dns-add.cgi' );
 
+    print
+	$w->p( 'phase: ', $w->param( 'phase' )), "\n" if ( $debug );
 
-    if ( $w->param( 'hostname_offset' )) {
+    # query the form parameters to see which phase we are in and what
+    # task to perform during this run
+    if ( $w->param( 'phase' ) == 3 ) {
+	commitChanges( $w );
+    } elsif ( $w->param( 'phase' ) == 2 ) {
+	processFormData( $w );
+    } elsif ( $w->param( 'phase' ) == 1 ) {
 	getConfirmation( $w );
-    # } elsif ( $w->param( 'affirmed' )) {
-    # 	processFormData( $w );
     } else {
 	getFormData( $w );
     }
@@ -82,10 +96,9 @@ sub main() {
     print $w->end_html(), "\n";
 }
 
+# phase 0: gather initial zone and domain data
 sub getFormData( $ ) {
     my $w = shift;
-
-    my $returnValue = undef;
 
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
@@ -108,11 +121,12 @@ sub getFormData( $ ) {
 
 	if ( $domains ) {
 
-	    # map/reduce: map() gives an array of domain hashes,
+	    # "map/reduce": map() gives an array of domain hashes,
 	    # keys() gives an array of owners, sort(grep()) drops the
-	    # in-addr.arpa zones
+	    # in-addr.arpa zones, the last sort(grep()) gets a list of
+	    # in-addr.arpa zones sorted by address in normal order
 	    @domains = map( { $_->{domain} } @{$domains->{data}->{zone}} );
-	    @domains = keys( %{{ map { $_ => 1 } @domains }} );
+	    @domains = keys( %{{ map( { $_ => 1 } @domains ) }} );
 	    @forwardDomains = sort( grep( !/(in-addr|ip6)\.arpa/, @domains ));
 	    # this godawful sort does the Right Thing(tm)
 	    @inaddrDomains = sort {
@@ -341,7 +355,7 @@ sub getFormData( $ ) {
 		   $w->td(
 		       $w->submit(
 			   -name => 'submit',
-			   -label => 'Make It So'
+			   -label => 'Show Records'
 		       ),
 		   ),
 		   $w->td(
@@ -353,6 +367,14 @@ sub getFormData( $ ) {
 		       ),
 		   ),
 	    ), "\n";
+
+	print
+	    $w->hidden(
+		-name => 'phase',
+		-value => '1',
+		-default => '1',
+	    ),
+	    "\n";
 
 	print
 	    $w->end_form(), "\n",
@@ -371,132 +393,411 @@ sub getFormData( $ ) {
     }
 }
 
+# phase 1: generate zone file entries and permit user to edit them
 sub getConfirmation( $ ) {
     my $w = shift;
 
-    my $returnValue = undef;
+    # Ensure they have proper access before doing anything else. See
+    # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
+    # for details.
+    if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
 
-    # get all the parameters from the completed form
-    my $owner = $w->param( 'owner' );
-    my $existing_forward_domain = $w->param( 'existing_forward_domain' );
-    my $forward_domain = $w->param( 'forward_domain' );
-    my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
-    my $do_reverse_domain = $w->param( 'do_reverse_domain' );
-    my $reverse_domain = $w->param( 'reverse_domain' );
-    my $ipv4network = $w->param( 'ipv4network' );
-    my $ipv4start = $w->param( 'ipv4start' );
-    my $ipv4end = $w->param( 'ipv4end' );
-    my $hostname_base = $w->param( 'hostname_base' );
-    my $hostname_offset = $w->param( 'hostname_offset' );
-    my $comment = $w->param( 'comment' );
-    my $verbose = $w->param( 'verbose' );
+	# get all the parameters from the completed form
+	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
+	my $forward_domain = $w->param( 'forward_domain' );
+	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
+	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
+	my $reverse_domain = $w->param( 'reverse_domain' );
+	my $ipv4network = $w->param( 'ipv4network' );
+	my $ipv4start = $w->param( 'ipv4start' );
+	my $ipv4end = $w->param( 'ipv4end' );
+	my $hostname_base = $w->param( 'hostname_base' );
+	my $hostname_offset = $w->param( 'hostname_offset' );
+	my $comment = $w->param( 'comment' );
+	my $verbose = $w->param( 'verbose' );
 
-    my $newForwardZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
-    my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
-    my @bind = ();
+	my $newForwardZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
+	my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
+	my @bind = ();
 
-    my $addrCount = $ipv4start;
-    my $hostCount = $hostname_offset;
+	my $addrCount = $ipv4start;
+	my $hostCount = $hostname_offset;
 
-    my %params = $w->Vars();
-    my $formatString = undef;
-    my @comment = ();
+	my %params = $w->Vars();
+	my $formatString = undef;
+	my @comment = ();
 
-    my @output = ();
+	my @forward_zones = ();
+	my @reverse_zones = ();
 
-    my $ua = LWP::UserAgent->new;
+	my $ua = LWP::UserAgent->new;
 
-    # they chose an existing domain
-    if ( $existing_forward_domain !~ /^-add new-/i ) {
-	$forward_domain = $existing_forward_domain;
-    }
-    if ( $do_reverse_domain ) {
-	# they chose an existing reverse domain
-	if ( $existing_reverse_domain !~ /^-add new-/i ) {
-	    $reverse_domain = $existing_reverse_domain;
+	# they chose an existing domain
+	if ( $existing_forward_domain !~ /^-add new-/i ) {
+	    $forward_domain = $existing_forward_domain;
 	}
-    }
+	if ( $do_reverse_domain ) {
+	    # they chose an existing reverse domain
+	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
+		$reverse_domain = $existing_reverse_domain;
+	    }
+	}
 
-    $formatString = '%-' . length( $hostname_base . '-xxx.' . $forward_domain . '.' ) . "s\t600\tIN\t%s\t%s\n";
+	# make the list of IP addresses and hostnames
+	# save the full IP address, the domain, and the numbered hostname
+	# use an array of hashes rather than a big hash so we can preserve the order of entries
+	for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
+	    $bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
+	    $bind[$addrCount]->{resource} = sprintf( '%s-%d', $hostname_base, $hostCount );
+	    if ( $do_reverse_domain ) {
+		$bind[$addrCount]->{forwardDomain} = $forward_domain;
+	    }
+	    $hostCount++;
+	}
+	if ( $debug || $verbose ) {
+	    print
+		$w->div({ -id => 'debugzonerecords' },
+			$w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): @bind is:' ), "\n",
+			$w->pre( Dumper( @bind )), "\n",
+		);
+	}
 
-    # make the list of IP addresses and hostnames
-    # save the full IP address, the domain, and the numbered hostname
-    # use an array rather than a hash so we can preserve the order of entries
-    for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
-	$bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
-	$bind[$addrCount]->{forward_domain} = $forward_domain;
-	$bind[$addrCount]->{hostname} = sprintf( '%s-%d', $hostname_base, $hostCount );
-	$bind[$addrCount]->{fqdn} = sprintf( '%s-%d.%s.', $hostname_base, $hostCount, $forward_domain );
-	$hostCount++;
-    }
-    if ( $debug || $verbose ) {
-	print
-	    $w->div({ -id => 'debugzonerecords' },
-		    $w->p( 'DEBUG: @bind is:' ), "\n",
-		    $w->pre( Dumper( @bind )), "\n",
-	    );
-    }
+	# strip any hand-entered comment symbols, the default comment, and save the wrapped comment
+	my $default_comment = DEFAULT_COMMENT;
+	$comment =~ s/^$default_comment$//;
+	@comment = split( ' ', $comment );
+	push ( @forward_zones, ( wrap( '; ', '; ', grep( !/^;$/, @comment )), "\n" ));
 
-    # strip any hand-entered comment symbols, the default comment, and save the wrapped comment
-    my $default_comment = DEFAULT_COMMENT;
-    $comment =~ s/^$default_comment$//;
-    @comment = split( ' ', $comment );
-    push ( @output, ( wrap( '; ', '; ', grep( !/^;$/, @comment )), "\n" ));
 
-    foreach my $record ( @bind ) {
-	next unless ( $record->{ipv4address} );
+	$formatString = '%-' . length( $hostname_base . '-xxx.' ) . "s\tIN\t%s\t%s\n";
 
-	push( @output,
-	      sprintf(
-		  $formatString,
-		  $record->{fqdn},
-		  'A',
-		  $record->{ipv4address}
-	      )
-	    );
-    }
-
-    if ( $do_reverse_domain ) {
-
-	$formatString = "%-3d\t\t600\tIN\t%s\t%s\n";
-
-	for ( my $r = 0; $r <= $#bind; $r++ ) {
-	    my $record = $bind[$r];
+	# build an array of strings to be searched for in the zone files.
+	foreach my $record ( @bind ) {
 	    next unless ( $record->{ipv4address} );
-	    push( @output,
-		  sprintf(
-		      $formatString,
-		      $r,
-		      'PTR',
-		      $record->{fqdn}
+
+	    push( @forward_zones,
+		  sprintf( $formatString,
+			   $record->{resource},
+			   'A',
+			   $record->{ipv4address}
 		  )
 		);
 	}
+
+	# do the same for the in-addr.arpa zones.
+	if ( $do_reverse_domain ) {
+	    push ( @reverse_zones, ( wrap( '; ', '; ', grep( !/^;$/, @comment )), "\n" ));
+
+	    $formatString = "%-3d\tIN\t%s\t%s.$forward_domain.\n";
+
+	    for ( my $r = 0; $r <= $#bind; $r++ ) {
+		my $record = $bind[$r];
+		next unless ( $record->{ipv4address} );
+		push( @reverse_zones,
+		      sprintf( $formatString,
+			       $r,
+			       'PTR',
+			       $record->{resource}
+		      )
+		    );
+	    }
+	}
+
+	print
+	    $w->start_div({ -id => 'zonerecords' , -style => 'display: block'} ), "\n",
+	    $w->start_form(
+		-name => 'review_changes',
+		-method => 'POST',
+		-action => '/cgi/addon_bulk-dns-add.cgi',
+	    ), "\n";
+	print
+	    $w->p( 'Forward zone data:' ),
+	    $w->textarea(
+		{
+		    -id => 'forward_zone_records',
+		    -name => 'forward_zone_records',
+		    -rows => $#forward_zones + 1,
+		    -columns => 80,
+		    -default => join( '', @forward_zones ),
+		},
+	    ), "\n";
+
+	if ( $do_reverse_domain ) {
+	    print
+		$w->p( 'Reverse zone data:' ),
+		$w->textarea(
+		    {
+			-id => 'reverse_zone_records',
+			-name => 'reverse_zone_records',
+			-rows => $#reverse_zones + 1,
+			-columns => 80,
+			-default => join( '', @reverse_zones ),
+		    },
+		), "\n";
+	}
+
+	# save the parameters from the previous form for the next phase
+	foreach my $p ( sort( keys( %params ))) {
+	    next if ( $p =~ /phase|submit/ );
+	    print
+		$w->hidden(
+		    -name => $p,
+		    -default => $w->param( $p )
+		), "\n";
+	}
+
+	print
+	    $w->br(),
+	    $w->submit(
+		-name => 'submit',
+		-label => 'Ready'
+	    ), "\n";
+
+	$w->param( -name => 'phase', -value => '2' );
+
+	print
+	    $w->hidden(
+		-name => 'phase',
+		-default => '2',
+		-override => 1,
+	    ),
+	    "\n";
+
+	print
+	    $w->end_form(),
+	    $w->end_div({-id => 'zonerecords' } ),
+	    "\n";
+
+	print
+	    $w->p(
+		'Click your browser\'s Back button if you need to make changes.'
+	    ), "\n";
+    } else {
+
+    	print
+    	    $w->br(), $w->br(),
+    	    $w->div({ -align => 'center' },
+		    $w->h1( 'Permission denied' ),
+		    "\n"
+    	    );
     }
+}
 
-    print
-	$w->start_div({ -id => 'zonerecords' , -style => 'display: block'} ), "\n",
-	# $w->start_pre({ -style => 'list-style-type: none; padding: 5px; margin: 5em;' }), "\n";
-	$w->start_form(
-	    -name => 'output'
-	), "\n";
-    print
-	$w->textarea(
-	    {
-		-id => 'result',
-		-name => 'result',
-		-rows => 255,
-		-columns => 80,
-		# -readonly => 1,
-		-default => join( '', @output ),
-	    },
-	), "\n";
+# phase 2: process the inputs and generate new zone file(s)
+sub processFormData( $ ) {
+    my $w = shift;
 
-    print
-	end_form(),
-	# $w->end_pre(), "\n",
-	$w->end_div({-id => 'zonerecords' } ),
-	"\n";
+    # Ensure they have proper access before doing anything else. See
+    # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
+    # for details.
+    if ( $debug || Whostmgr::ACLS::checkacl( 'create-dns' )) {
+
+	# get all the parameters from the completed form
+	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
+	my $forward_domain = $w->param( 'forward_domain' );
+	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
+	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
+	my $reverse_domain = $w->param( 'reverse_domain' );
+	my $verbose = $w->param( 'verbose' );
+	my $forward_zone_records = $w->param( 'forward_zone_records' );
+	my $reverse_zone_records = $w->param( 'reverse_zone_records' );
+
+	my %params = $w->Vars();
+
+	my $response = undef;
+	my $ua = LWP::UserAgent->new;
+
+	# they chose an existing domain
+	if ( $existing_forward_domain !~ /^-add new-/i ) {
+	    $forward_domain = $existing_forward_domain;
+	}
+	if ( $do_reverse_domain ) {
+	    # they chose an existing reverse domain
+	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
+		$reverse_domain = $existing_reverse_domain;
+	    }
+	}
+
+	if ( $debug || $verbose ) {
+	    print
+		$w->div( { -id => 'debugzonerecords' },
+			 $w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): forward zone records for: ', $forward_domain ), "\n",
+			 $w->pre( $forward_zone_records ), "\n",
+		);
+	    if ( $do_reverse_domain ) {
+		print
+		    $w->div( { -id => 'debugzonerecords' },
+			     $w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): reverse zone records for: ', $reverse_domain ), "\n",
+			     $w->pre( $reverse_zone_records ), "\n",
+		    );
+	    }
+	}
+
+	# update the forward zone file
+	if ( -r NAMEDIR . '/' . $forward_domain . '.db' ) {
+	    newZoneFile ( $w, $forward_domain, $forward_zone_records );
+	} else {
+	    print
+		$w->p( 'Cannot read zone file ', $forward_domain, ' (', $!, ')' ), "\n";
+	}
+
+	if ( $do_reverse_domain ) {
+	    # update the reverse zone file
+	    if ( -r NAMEDIR . '/' . $reverse_domain . '.db' ) {
+		newZoneFile ( $w, $reverse_domain, $reverse_zone_records );
+	    } else {
+		print
+		    $w->p( 'Cannot read zone file ', $reverse_domain, ' (', $!, ')' ), "\n";
+	    }
+	}
+
+	print
+	    $w->p( 'Click the Commit button if the above changes are correct. Otherwise click Back and make necessary changes.' );
+
+	print
+	    start_form(
+		-name => 'commit_changes',
+		-method => 'POST',
+		-action => '/cgi/addon_bulk-dns-add.cgi',
+	    ), "\n";
+
+	# save the parameters from the previous form for the next phase
+	foreach my $p ( sort( keys( %params ))) {
+	    next if ( $p =~ /phase|submit/ );
+	    print
+		$w->hidden(
+		    -name => $p,
+		    -default => $w->param( $p )
+		), "\n";
+	}
+
+	print
+	    $w->br(),
+	    $w->submit(
+		-name => 'submit',
+		-label => 'Commit'
+	    ), "\n";
+
+	$w->param( -name => 'phase', -value => '3' );
+
+	print
+	    $w->hidden(
+		-name => 'phase',
+		-default => '3',
+		-override => 1,
+	    ),
+	    "\n";
+
+	print
+	    end_form(),
+	    "\n";
+
+    } else {
+
+    	print
+    	    $w->br(), $w->br(),
+    	    $w->div({ -align => 'center' },
+		    $w->h1( 'Permission denied' ),
+		    "\n"
+    	    );
+    }
+}
+
+# phase 3: commit the changes after reviewing the diffs
+sub commitChanges( $ ) {
+    my $w = shift;
+
+    # Ensure they have proper access before doing anything else. See
+    # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
+    # for details.
+    if ( $debug || Whostmgr::ACLS::checkacl( 'create-dns' )) {
+
+	# get all the parameters from the completed form
+	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
+	my $forward_domain = $w->param( 'forward_domain' );
+	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
+	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
+	my $reverse_domain = $w->param( 'reverse_domain' );
+	my $verbose = $w->param( 'verbose' );
+	my $committed = $w->param( 'committed' );
+
+	# they chose an existing domain
+	if ( $existing_forward_domain !~ /^-add new-/i ) {
+	    $forward_domain = $existing_forward_domain;
+	}
+	if ( $do_reverse_domain ) {
+	    # they chose an existing reverse domain
+	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
+		$reverse_domain = $existing_reverse_domain;
+	    }
+	}
+
+	my $forwardZoneFileName = NAMEDIR . '/' . $forward_domain . '.db';
+	my $reverseZoneFileName = NAMEDIR . '/' . $reverse_domain . '.db';
+	my $newForwardZoneFileName = NAMEDIR . '/' . $forward_domain . '.ZZZ';
+	my $newReverseZoneFileName = NAMEDIR . '/' . $reverse_domain . '.ZZZ';
+
+	if ( -r $newForwardZoneFileName ) {
+	    if ( -w $forwardZoneFileName ) {
+
+		if ( $debug ) {
+		    print
+			$w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): Would rename( ',
+			       $newForwardZoneFileName, ', ', $forwardZoneFileName, ')' ),
+			"\n";
+		} else {
+		    die( "Could not rename $newForwardZoneFileName to $forwardZoneFileName ($!). Stopped" )
+			unless ( rename( $newForwardZoneFileName, $forwardZoneFileName ));
+		}
+	    } else {
+		print
+		    $w->p( { -style => 'color:red;' },
+			   'Exception! ', $forwardZoneFileName, ' is not writable!'
+		    ), "\n";
+	    }
+	} else {
+	    print
+		$w->p( { -style => 'color:red;' },
+		       'Exception! ', $newForwardZoneFileName, ' is not readable!'
+		), "\n";
+	}
+
+	if ( $do_reverse_domain ) {
+	    if ( -r $newReverseZoneFileName ) {
+		if ( -w $reverseZoneFileName ) {
+
+		    if ( $debug ) {
+			print
+			    $w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): Would rename( ',
+				   $newReverseZoneFileName, ', ', $reverseZoneFileName, ')' ),
+			    "\n";
+		    } else {
+			die( "Could not rename $newReverseZoneFileName to $reverseZoneFileName ($!). Stopped" )
+			    unless ( rename( $newReverseZoneFileName, $reverseZoneFileName ));
+		    }
+		} else {
+		    print
+			$w->p( { -style => 'color:red;' },
+			       'Exception! ', $reverseZoneFileName, ' is not writable!'
+			), "\n";
+		}
+	    } else {
+		print
+		    $w->p( { -style => 'color:red;' },
+			   'Exception! ', $newReverseZoneFileName, ' is not readable!'
+		    ), "\n";
+	    }
+	}
+
+    } else {
+
+    	print
+    	    $w->br(), $w->br(),
+    	    $w->div({ -align => 'center' },
+		    $w->h1( 'Permission denied' ),
+		    "\n"
+    	    );
+    }
 }
 
 # return a hash reference to response data from a request
@@ -515,7 +816,7 @@ sub authorizedRequest( $$$@ ) {
     # make a complete URL from the arguments passed in
     $URL = BASE_URL . '/' . $action . '?' . join( '&', @args );
 
-    print $w->pre( Dumper( $URL )), "\n" if ( $debug );
+    # print $w->pre( Dumper( $URL )), "\n" if ( $debug );
 
     # see http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/ApiAuthentication
     if ( $request = HTTP::Request->new( GET => $URL )) {
@@ -525,12 +826,13 @@ sub authorizedRequest( $$$@ ) {
     }
 
     if ( $response ) {
-	print
-	    $w->p( '$response from $ua->request():' ),
-	    $w->pre( Dumper( $response )), "\n" if ( $debug );
+	# print
+	#     $w->p( '$response from $ua->request():' ),
+	#     $w->pre( Dumper( $response )), "\n" if ( $debug ),;
 
 	$jsonRef = processJSONresponse( $w, $action, $response->{'_content'} );
-	print $w->pre( Dumper( $jsonRef )), "\n" if ( $debug );
+
+	# print $w->pre( Dumper( $jsonRef )), "\n" if ( $debug );
     } else {
 	print
 	    $w->p( 'ERROR: missing response from $ua->request()' ),
@@ -610,6 +912,138 @@ sub apiMessageDisplay ( $$$ ) {
     }
 }
 
+# update a zone file with a named based on the $domainName and new records in $zoneRecords
+sub newZoneFile ( $$$ ) {
+    my $w = shift;
+    my $domainName = shift;
+    my $zoneRecords = shift;
+
+    my $zoneFileName = NAMEDIR . '/' . $domainName . '.db';
+    my $newZoneFileName = NAMEDIR . '/' . $domainName . '.ZZZ';
+    my @zoneFileContents = ();
+    my @newZoneFileContents = ();
+
+    # the map statement in addOrReplace() is different for reverse zones
+    my $reverseZone = ( $domainName =~ /(in-addr|ip6)\.arpa/i );
+
+    # metadata for the existing file will be applied to the new file
+    my $sb = stat( $zoneFileName );
+
+    # place the new zone records into an array for further processing
+    my @newLines = split( /\n/, $zoneRecords );
+
+    open( ZF, $zoneFileName ) || die "Cannot open $zoneFileName for reading ($!). Stopped";
+    @zoneFileContents = <ZF>;
+    close( ZF );
+    chomp( @zoneFileContents );
+
+    # replace the records if they exist, else add them to the end of the existing records
+    @newZoneFileContents = addOrReplace ( $w, \@zoneFileContents, \@newLines, $reverseZone );
+
+    print
+	$w->h1( $zoneFileName ),
+	$w->p( 'Showing differences between old and new versions of the zone file.' ), "\n";
+
+    # use Text::Diff::FormattedHTML to display the old and the new zone file contents
+    # (chop lines at 80 characters just for display purposes)
+    print
+	diff_strings(
+	    join( "\n", map( substr($_, 0, 79), @zoneFileContents )),
+	    join( "\n", map( substr($_, 0, 79), @newZoneFileContents ))
+	);
+
+    if ( -f $newZoneFileName ) {
+	unlink( $newZoneFileName );
+    }
+
+    # save @newZoneFileContents to a file for processing in the next phase
+    open( NEW, ">$newZoneFileName" ) || die( "Cannot open $newZoneFileName for writing ($!). Stopped" );
+    print NEW join( "\n", @newZoneFileContents ), "\n" || die( "Could not write to $newZoneFileName ($!). Stopped" );
+    close( NEW );
+
+    die( "Cannot set ownership of new zone file $newZoneFileName ($!). Stopped" )
+	unless ( chown( $sb->uid, $sb->gid, $newZoneFileName ) == 1 );
+    die( "Cannot set permissions for new zone file $newZoneFileName ($!). Stopped" )
+	unless ( chmod( $sb->mode & 07777, $newZoneFileName ) == 1 );
+}
+
+# return an array containing the new contents of the zone file
+sub addOrReplace( $$$$ ) {
+    my $w = shift;
+    my $oldContents = shift;
+    my $newLines = shift;
+    my $reverseZone = shift;
+
+    my @newContents = @$oldContents;
+    my $successExpr = qr/^1$/;
+
+    foreach my $line ( @$newLines ) {
+
+	my @result = ();
+
+	# this line format is established in the subrouting getConfirmation() with variable $formatString
+	# and make sure everything is in lower case
+	my ( $hostName, $class, $type, $resourceName ) = split( ' ', $line );
+	# $hostName = lc( $hostName );
+	# $class = lc( $class );
+	# $type = lc( $type );
+	# $resourceName = lc( $resourceName );
+
+	if ( $reverseZone ) {
+
+	    # reverse zones: replace the resource name (the right-hand field)
+
+	    # back references (items in parentheses):
+	    # $1 - first word on the line (the hostname), what we search for
+	    # $2 - spaces + TTL (empty if no TTL)
+	    # $3 - TTL (empty if no TTL)
+	    # $4 - class (IN)
+	    # $5 - type (A, PTR, etc)
+	    # $6 - fqdn (resource name), what we replace
+	    #                      host       TTL          class     type  resource name
+	    my $searchExpr = qr/^($hostName)(\s+(\d+))*\s+($class)\s+(ptr)\s+(.*)\s*$/i;
+
+	    @result = map( { s/$searchExpr/$1$2\t$4\t$5\t$resourceName/; } @newContents );
+
+	    # the above map() call returns an array of success or undef
+	    # for each element of @newContents depending on the result of
+	    # the substitution (s///)
+	    if ( ! grep( /$successExpr/, @result )) {
+
+		# add the new line to the end of the zone file contents if no match succeeded
+		push( @newContents, $line );
+	    }
+	} else {
+
+	    # forward zones: replace the hostname (the left-hand field)
+
+	    # back references (items in parentheses):
+	    # $1 - first char on the line
+	    # $2 - first word on the line (the hostname), what we replace
+	    # $3 - spaces + TTL (empty if no TTL)
+	    # $4 - TTL (empty if no TTL)
+	    # $5 - class (IN)
+	    # $6 - type (A, PTR, etc)
+	    # $7 - IP address (resource name), what we search for
+	    #                      host       TTL          class    type  resource name
+	    my $searchExpr = qr/^(([^;\s])+)(\s+(\d+))*\s+($class)\s+(a)\s+($resourceName)\s*$/i;
+
+	    @result = map( s/$searchExpr/$hostName$3\t$5\t$6\t$7/, @newContents );
+
+	    # the above map() call returns an array of success or undef
+	    # for each element of @newContents depending on the result of
+	    # the substitution (s///)
+	    if ( ! grep( /$successExpr/, @result )) {
+
+		# add the new line to the end of the zone file contents if no match succeeded
+		push( @newContents, $line );
+	    }
+	}
+    }
+
+    @newContents;
+}
+
 =pod
 
 =head1 NAME
@@ -622,7 +1056,7 @@ Generate a list of hostnames and IP addresses in BIND zone file format. The list
 
 =head1 DESCRIPTION
 
-addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template", a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of generating the zone lines. The user must then copy the desired lines and paste them into an editor session in which they have open the desired BIND zone file.
+addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template" (consisting of a prefix and a starting number), a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of generating the zone lines. The user must then copy the desired lines and paste them into an editor session in which they have open the desired BIND zone file.
 
 =head1 FILES
 
@@ -676,7 +1110,7 @@ function setFocusDelayed()
 function setfocus(valfield)
 {
     // save valfield in global variable so value retained when routine exits
-    global_valfield = valfield;
+	global_valfield = valfield;
     setTimeout( 'setFocusDelayed()', 100 );
 }
 
@@ -691,9 +1125,9 @@ function msg(fld,     // id of element to display message in
              message) // string to display
 {
     // setting an empty string can give problems if later set to a
-    // non-empty string, so ensure a space present. (For Mozilla and Opera one could
-    // simply use a space, but IE demands something more, like a non-breaking space.)
-    var dispmessage;
+	// non-empty string, so ensure a space present. (For Mozilla and Opera one could
+							 // simply use a space, but IE demands something more, like a non-breaking space.)
+	var dispmessage;
     if (emptyString.test(message))
 	dispmessage = String.fromCharCode(nbsp);
     else
@@ -745,7 +1179,7 @@ function commonCheck(valfield,   // element to be validated
 	} else {
 	    retval = true;  // not available on this browser
 	}
-}
+    }
     return retval;
 }
 
@@ -755,7 +1189,7 @@ function commonCheck(valfield,   // element to be validated
 // Returns true if so
 // --------------------------------------------
 function validatePresent(valfield,   // element to be validated
-                         infofield ) // id of element to receive info/error msg
+			 infofield ) // id of element to receive info/error msg
 {
     var stat = commonCheck (valfield, infofield, true);
     if (stat != proceed) return stat;
@@ -770,8 +1204,8 @@ function validatePresent(valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 function validateIPv4 (valfield,   // element to be validated
-                      infofield,   // id of element to receive info/error msg
-                      required)    // true if required
+		       infofield,   // id of element to receive info/error msg
+		       required)    // true if required
 {
     var stat = commonCheck (valfield, infofield, required);
     if (stat != proceed) return stat;
@@ -810,8 +1244,8 @@ function validateIPv4 (valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 function validateIPv6 (valfield,   // element to be validated
-                      infofield,   // id of element to receive info/error msg
-                      required)    // true if required
+		       infofield,   // id of element to receive info/error msg
+		       required)    // true if required
 {
     var stat = commonCheck (valfield, infofield, required);
 
@@ -837,8 +1271,8 @@ function validateIPv6 (valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 function validateHostName (valfield,   // element to be validated
-                           infofield,  // id of element to receive info/error msg
-                           required)   // true if required
+			   infofield,  // id of element to receive info/error msg
+			   required)   // true if required
 {
     var stat = commonCheck (valfield, infofield, required);
     if (stat != proceed) return stat;
@@ -869,8 +1303,8 @@ function validateHostName (valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 function validateBaseAddress (valfield,   // element to be validated
-                              infofield,   // id of element to receive info/error msg
-                              required)    // true if required
+			      infofield,   // id of element to receive info/error msg
+			      required)    // true if required
 {
     var stat = commonCheck (valfield, infofield, required);
     if (stat != proceed) return stat;
@@ -909,8 +1343,8 @@ function validateBaseAddress (valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 function validateReverseZone (valfield,   // element to be validated
-                                infofield,  // id of element to receive info/error msg
-                                required)   // true if required
+			      infofield,  // id of element to receive info/error msg
+			      required)   // true if required
 {
     var stat = commonCheck (valfield, infofield, required);
     if (stat != proceed) return stat;
@@ -940,10 +1374,10 @@ function validateReverseZone (valfield,   // element to be validated
 // Returns true if OK
 // --------------------------------------------
 function validateNumericRange (valfield,   // element to be validated
-                               infofield,  // id of element to receive info/error msg
-                               rmin,       // minimum value in range
-                               rmax,       // maximum value in range
-                               required)   // true if required
+			       infofield,  // id of element to receive info/error msg
+			       rmin,       // minimum value in range
+			       rmax,       // maximum value in range
+			       required)   // true if required
 {
     var stat = commonCheck (valfield, infofield, required);
     if (stat != proceed) return stat;
@@ -978,10 +1412,10 @@ function showAddNew (valfield,   // element to be validated
 
     if ( /^-Add New-$/.test( valfield.value )) {
 	// set the element style to "visible"
-	element.style.display = "block";
+	    element.style.display = "block";
     } else {
 	// set the element style to "invisible"
-	element.style.display = "none";
+	    element.style.display = "none";
     }
 }
 
@@ -996,10 +1430,10 @@ function setVisibility ( valfield, divName )
 
     if ( valfield.checked ) {
 	// set the element style to "visible"
-	element.style.display = "block";
+	    element.style.display = "block";
     } else {
 	// set the element style to "invisible"
-	element.style.display = "none";
+	    element.style.display = "none";
     }
 
 }
