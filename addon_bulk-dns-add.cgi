@@ -19,6 +19,8 @@ BEGIN {
 }
 
 use strict;
+use warnings qw( all );
+
 use Data::Dumper;
 use CGI qw( :all );
 use CGI::Carp qw( fatalsToBrowser );
@@ -42,6 +44,7 @@ my $debug = 1;
 use constant BASE_URL => 'http://localhost:2086/json-api';
 use constant DEFAULT_COMMENT => 'Comments for this block of addresses. This will be placed above the block of addresses.';
 use constant NAMEDIR => '/var/named';
+use constant SUFFIX => '.NEW';
 
 sub main();
 sub getFormData( $ );
@@ -53,6 +56,7 @@ sub processJSONresponse( $$$ );
 sub apiMessageDisplay ( $$$ );
 sub newZoneFile ( $$$ );
 sub addOrReplace( $$$$ );
+sub networkAddr( $ );
 
 # run it
 main;
@@ -110,6 +114,9 @@ sub getFormData( $ ) {
 	    $w->h1( 'Bulk DNS Generator (formerly known as zonemaker)' ), "\n",
 	    $w->p( 'Use this form to generate a set of entries to add to a DNS zone.' );
 
+	##################################################
+	###  get initial pop-up menu data from cPanel  ###
+	##################################################
 	# $domains is the JSON data structure returned from the query
 	# @domains is the array containing a sorted list of unique domains
 	# @forwardDomains contains "normal" domains, and
@@ -140,11 +147,11 @@ sub getFormData( $ ) {
 	    } grep( /(in-addr|ip6)\.arpa/, @domains );
 
 	    # prepend placeholders for adding a new domain
-	    unshift( @forwardDomains, ( '', '-Add New-', ));
-	    unshift( @inaddrDomains, ( '', '-Add New-', ));
+	    unshift( @forwardDomains, ( '' ));
+	    unshift( @inaddrDomains, ( '' ));
 	} else {
-	    @forwardDomains = ( '', '-Add New-' );
-	    @inaddrDomains = ( '', '-Add New-' );
+	    @forwardDomains = ( '' );
+	    @inaddrDomains = ( '' );
 	}
 
 	print
@@ -203,13 +210,13 @@ sub getFormData( $ ) {
 		-name => 'do_reverse_domain',
 		-checked => 0,
 		-label => 'Add reverse domain records',
-		-onClick => 'setVisibility(this, "reverse_domain")',
+		-onClick => 'toggleVisibility(this, "reverse_domain"); toggleVisibility(this, "ipv4network");',
 	    );
 
 	# hide this <div> at first (style="display: none")
 	# the javascript function showAddNew() makes this visible and invisible
 	print
-	    $w->div({ -id => 'reverse_domain', -style => 'display: none' },
+	    $w->div( { -id => 'reverse_domain', -style => 'display: none' },
 		    $w->table ({ -border => '0', id => 't3' },
 			       $w->Tr({ -align => 'left' },
 				      $w->th({ -align => 'right' }, 'Choose a reverse domain (check to include):&nbsp;' ),
@@ -218,7 +225,6 @@ sub getFormData( $ ) {
 					      -id => 'existing_reverse_domain',
 					      -name => 'existing_reverse_domain',
 					      -values => \@inaddrDomains,
-					      -onChange => 'showAddNew(this, "reverse_domain_textfield")',
 					  ),
 				      ),
 				      $w->td({ -id => 'info_existing_reverse_domain' }, '&nbsp;' ),
@@ -245,20 +251,23 @@ sub getFormData( $ ) {
 	    );
 
 	print
-	    $w->start_table ({ -border => '0' } ),
-	    $w->Tr({ -align => 'left' },
-		   $w->th({ -align => 'right' }, 'Base Address (first three octets):&nbsp;' ),
-		   $w->td(
-		       $w->textfield(
-			   -id => 'ipv4network',
-			   -name => 'ipv4network',
-			   -size => 11,
-			   -maxlength => 11,
-			   -onChange => 'validateBaseAddress(this, "info_ipv4network", true)',
-		       ),
-		   ),
-		   $w->td({ -id => 'info_ipv4network' }, '&nbsp;' ),
-	    ), "\n";
+	    $w->div( { -id => 'ipv4network', -style => 'display: block' },
+		     $w->table ( { -border => '0' },
+				 $w->Tr({ -align => 'left' },
+					$w->th({ -align => 'right' }, 'Base Address (first three octets):&nbsp;' ),
+					$w->td(
+					    $w->textfield(
+						-id => 'ipv4network',
+						-name => 'ipv4network',
+						-size => 11,
+						-maxlength => 11,
+						-onChange => 'validateBaseAddress(this, "info_ipv4network", true)',
+					    ),
+					),
+					$w->td({ -id => 'info_ipv4network' }, '&nbsp;' ),
+				 ), "\n",
+		     ), "\n",
+	    );
 
 	print
 	    $w->start_table ({ -border => '0' } ),
@@ -404,10 +413,8 @@ sub getConfirmation( $ ) {
 
 	# get all the parameters from the completed form
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
-	my $forward_domain = $w->param( 'forward_domain' );
 	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
 	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
-	my $reverse_domain = $w->param( 'reverse_domain' );
 	my $ipv4network = $w->param( 'ipv4network' );
 	my $ipv4start = $w->param( 'ipv4start' );
 	my $ipv4end = $w->param( 'ipv4end' );
@@ -416,8 +423,9 @@ sub getConfirmation( $ ) {
 	my $comment = $w->param( 'comment' );
 	my $verbose = $w->param( 'verbose' );
 
-	my $newForwardZone = ( $existing_forward_domain =~ /^-add\s+new-$/i );
-	my $newReverseZone = ( $existing_reverse_domain =~ /^-add\s+new-$/i );
+	my $forward_domain = undef;
+	my $reverse_domain = undef;
+
 	my @bind = ();
 
 	my $addrCount = $ipv4start;
@@ -432,15 +440,10 @@ sub getConfirmation( $ ) {
 
 	my $ua = LWP::UserAgent->new;
 
-	# they chose an existing domain
-	if ( $existing_forward_domain !~ /^-add new-/i ) {
-	    $forward_domain = $existing_forward_domain;
-	}
+	$forward_domain = $existing_forward_domain;
 	if ( $do_reverse_domain ) {
-	    # they chose an existing reverse domain
-	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
-		$reverse_domain = $existing_reverse_domain;
-	    }
+	    $reverse_domain = $existing_reverse_domain;
+	    $ipv4network = networkAddr( $reverse_domain );
 	}
 
 	# make the list of IP addresses and hostnames
@@ -594,28 +597,23 @@ sub processFormData( $ ) {
 
 	# get all the parameters from the completed form
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
-	my $forward_domain = $w->param( 'forward_domain' );
 	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
 	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
-	my $reverse_domain = $w->param( 'reverse_domain' );
 	my $verbose = $w->param( 'verbose' );
 	my $forward_zone_records = $w->param( 'forward_zone_records' );
 	my $reverse_zone_records = $w->param( 'reverse_zone_records' );
+
+	my $forward_domain = undef;
+	my $reverse_domain = undef;
 
 	my %params = $w->Vars();
 
 	my $response = undef;
 	my $ua = LWP::UserAgent->new;
 
-	# they chose an existing domain
-	if ( $existing_forward_domain !~ /^-add new-/i ) {
-	    $forward_domain = $existing_forward_domain;
-	}
+	$forward_domain = $existing_forward_domain;
 	if ( $do_reverse_domain ) {
-	    # they chose an existing reverse domain
-	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
-		$reverse_domain = $existing_reverse_domain;
-	    }
+	    $reverse_domain = $existing_reverse_domain;
 	}
 
 	if ( $debug || $verbose ) {
@@ -714,28 +712,22 @@ sub commitChanges( $ ) {
 
 	# get all the parameters from the completed form
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
-	my $forward_domain = $w->param( 'forward_domain' );
 	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
 	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
-	my $reverse_domain = $w->param( 'reverse_domain' );
 	my $verbose = $w->param( 'verbose' );
-	my $committed = $w->param( 'committed' );
 
-	# they chose an existing domain
-	if ( $existing_forward_domain !~ /^-add new-/i ) {
-	    $forward_domain = $existing_forward_domain;
-	}
+	my $forward_domain = undef;
+	my $reverse_domain = undef;
+
+	$forward_domain = $existing_forward_domain;
 	if ( $do_reverse_domain ) {
-	    # they chose an existing reverse domain
-	    if ( $existing_reverse_domain !~ /^-add new-/i ) {
-		$reverse_domain = $existing_reverse_domain;
-	    }
+	    $reverse_domain = $existing_reverse_domain;
 	}
 
 	my $forwardZoneFileName = NAMEDIR . '/' . $forward_domain . '.db';
 	my $reverseZoneFileName = NAMEDIR . '/' . $reverse_domain . '.db';
-	my $newForwardZoneFileName = NAMEDIR . '/' . $forward_domain . '.ZZZ';
-	my $newReverseZoneFileName = NAMEDIR . '/' . $reverse_domain . '.ZZZ';
+	my $newForwardZoneFileName = NAMEDIR . '/' . $forward_domain . SUFFIX;
+	my $newReverseZoneFileName = NAMEDIR . '/' . $reverse_domain . SUFFIX;
 
 	if ( -r $newForwardZoneFileName ) {
 	    if ( -w $forwardZoneFileName ) {
@@ -919,7 +911,7 @@ sub newZoneFile ( $$$ ) {
     my $zoneRecords = shift;
 
     my $zoneFileName = NAMEDIR . '/' . $domainName . '.db';
-    my $newZoneFileName = NAMEDIR . '/' . $domainName . '.ZZZ';
+    my $newZoneFileName = NAMEDIR . '/' . $domainName . SUFFIX;
     my @zoneFileContents = ();
     my @newZoneFileContents = ();
 
@@ -1042,6 +1034,19 @@ sub addOrReplace( $$$$ ) {
     }
 
     @newContents;
+}
+
+# extract the "class C" network address from a reverse domain name
+sub networkAddr( $ ) {
+    my $reverse_domain = shift;
+
+    my $networkAddr = undef;
+
+    if ( $reverse_domain =~ /(\d+)\.(\d+)\.(\d+)\.in-addr\.arpa/i ) {
+	$networkAddr = sprintf( "%d.%d.%d", $3, $2, $1 );
+    }
+
+    $networkAddr;
 }
 
 =pod
@@ -1402,33 +1407,15 @@ function validateNumericRange (valfield,   // element to be validated
 }
 
 // --------------------------------------------
-//             showAddNew
-// make the form element in divName visible if the value passed is "-Add New-"
+//             toggleVisibility
+// toggle visibility of divName based on the
+// its present value
 // --------------------------------------------
-function showAddNew (valfield,   // element to be validated
-		     divName)    // id of div to hold new form element
+function toggleVisibility ( valfield, divName )
 {
     var element = document.getElementById( divName );
 
-    if ( /^-Add New-$/.test( valfield.value )) {
-	// set the element style to "visible"
-	    element.style.display = "block";
-    } else {
-	// set the element style to "invisible"
-	    element.style.display = "none";
-    }
-}
-
-// --------------------------------------------
-//             setVisibility
-// set visibility of divName based on the
-// value of valfield
-// --------------------------------------------
-function setVisibility ( valfield, divName )
-{
-    var element = document.getElementById( divName );
-
-    if ( valfield.checked ) {
+    if ( element.style.display == "none" ) {
 	// set the element style to "visible"
 	    element.style.display = "block";
     } else {
