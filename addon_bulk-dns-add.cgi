@@ -57,6 +57,7 @@ sub apiMessageDisplay ( $$$ );
 sub newZoneFile ( $$$ );
 sub addOrReplace( $$$$ );
 sub networkAddr( $ );
+sub incrementSerial ( $$ );
 
 # run it
 main;
@@ -250,6 +251,8 @@ sub getFormData( $ ) {
 		    )
 	    );
 
+	# the base (CIDR /24) address
+	# this block disappears when the user chooses to include a reverse zone
 	print
 	    $w->div( { -id => 'ipv4network', -style => 'display: block' },
 		     $w->table ( { -border => '0' },
@@ -269,6 +272,7 @@ sub getFormData( $ ) {
 		     ), "\n",
 	    );
 
+	# fourth octet starting point
 	print
 	    $w->start_table ({ -border => '0' } ),
 	    $w->Tr({ -align => 'left' },
@@ -279,12 +283,13 @@ sub getFormData( $ ) {
 			   -name => 'ipv4start',
 			   -size => 3,
 			   -maxlength => 3,
-			   -onchange  => 'validateNumericRange(this, "info_ipv4start", 1, 255, true)',
+			   -onchange  => 'validateNumericRange(this, "info_ipv4start", 0, 255, true)',
 		       ),
 		   ),
 		   $w->td({ -id => 'info_ipv4start' }, '&nbsp;' ),
 	    ), "\n";
 
+	# fourth octet ending point
 	print
 	    $w->Tr({ -align => 'left' },
 		   $w->th({ -align => 'right' }, 'Fourth octet end:&nbsp;' ),
@@ -300,6 +305,7 @@ sub getFormData( $ ) {
 		   $w->td({ -id => 'info_ipv4end' }, '&nbsp;' ),
 	    ), "\n";
 
+	# base hostname
 	print
 	    $w->Tr({ -align => 'left' },
 		   $w->th({ -align => 'right' }, 'Base hostname:&nbsp;' ),
@@ -315,6 +321,9 @@ sub getFormData( $ ) {
 		   $w->td({ -id => 'info_hostname_base' }, '&nbsp;' ),
 	    ), "\n";
 
+	# hostname number - this number gets incremented for as many records as they
+	# chose in the fourth octet range
+	# the maximum limit of 999 is arbitrary, but it really cannot be greater than 255, can it?
 	print
 	    $w->Tr({ -align => 'left' },
 		   $w->th({ -align => 'right' }, 'Starting point for hostname increment:&nbsp;' ),
@@ -324,7 +333,7 @@ sub getFormData( $ ) {
 			   -name => 'hostname_offset',
 			   -size => 3,
 			   -maxlength => 3,
-			   -onchange  => 'validateNumericRange(this, "info_hostname_offset", 1, 999, true)',
+			   -onchange  => 'validateNumericRange(this, "info_hostname_offset", 0, 999, true)',
 		       ),
 		   ),
 		   $w->td({ -id => 'info_hostname_offset' }, '&nbsp;' ),
@@ -932,31 +941,43 @@ sub newZoneFile ( $$$ ) {
     # replace the records if they exist, else add them to the end of the existing records
     @newZoneFileContents = addOrReplace ( $w, \@zoneFileContents, \@newLines, $reverseZone );
 
-    print
-	$w->h1( $zoneFileName ),
-	$w->p( 'Showing differences between old and new versions of the zone file.' ), "\n";
+    # set the serial number for the zone
+    if ( incrementSerial( $w, \@newZoneFileContents )) {
 
-    # use Text::Diff::FormattedHTML to display the old and the new zone file contents
-    # (chop lines at 80 characters just for display purposes)
-    print
-	diff_strings(
-	    join( "\n", map( substr($_, 0, 79), @zoneFileContents )),
-	    join( "\n", map( substr($_, 0, 79), @newZoneFileContents ))
-	);
+	print
+	    $w->h1( $zoneFileName ),
+	    $w->p( 'Showing differences between old and new versions of the zone file.' ), "\n";
 
-    if ( -f $newZoneFileName ) {
-	unlink( $newZoneFileName );
+	# use Text::Diff::FormattedHTML to display the old and the new zone file contents
+	# (chop lines at 80 characters just for display purposes)
+	print
+	    diff_strings(
+		join( "\n", map( substr($_, 0, 79), @zoneFileContents )),
+		join( "\n", map( substr($_, 0, 79), @newZoneFileContents ))
+	    );
+
+	if ( -f $newZoneFileName ) {
+	    unlink( $newZoneFileName );
+	}
+
+	# save @newZoneFileContents to a file for processing in the next phase
+	open( NEW, ">$newZoneFileName" ) || die( "Cannot open $newZoneFileName for writing ($!). Stopped" );
+	print NEW join( "\n", @newZoneFileContents ), "\n" || die( "Could not write to $newZoneFileName ($!). Stopped" );
+	close( NEW );
+
+	die( "Cannot set ownership of new zone file $newZoneFileName ($!). Stopped" )
+	    unless ( chown( $sb->uid, $sb->gid, $newZoneFileName ) == 1 );
+	die( "Cannot set permissions for new zone file $newZoneFileName ($!). Stopped" )
+	    unless ( chmod( $sb->mode & 07777, $newZoneFileName ) == 1 );
+
+    } else {
+
+	print
+	    $w->h1( { -style => 'color:red;' },
+		    'Exception: Could not update serial number for zone file ', $zoneFileName, '!',
+	    ),
+	    "\n";
     }
-
-    # save @newZoneFileContents to a file for processing in the next phase
-    open( NEW, ">$newZoneFileName" ) || die( "Cannot open $newZoneFileName for writing ($!). Stopped" );
-    print NEW join( "\n", @newZoneFileContents ), "\n" || die( "Could not write to $newZoneFileName ($!). Stopped" );
-    close( NEW );
-
-    die( "Cannot set ownership of new zone file $newZoneFileName ($!). Stopped" )
-	unless ( chown( $sb->uid, $sb->gid, $newZoneFileName ) == 1 );
-    die( "Cannot set permissions for new zone file $newZoneFileName ($!). Stopped" )
-	unless ( chmod( $sb->mode & 07777, $newZoneFileName ) == 1 );
 }
 
 # return an array containing the new contents of the zone file
@@ -1049,6 +1070,55 @@ sub networkAddr( $ ) {
     $networkAddr;
 }
 
+# increment the serial number for the zone in the array Ref $zoneData
+# this subroutine will work properly until 31 December 2199
+# returns the value of the s/// expression with the updated zone in the array Ref
+sub incrementSerial ( $$ ) {
+    my $w = shift;
+    my $zoneData = shift;
+
+    my $returnValue = undef;
+
+    use Time::localtime;
+
+    # Note: this regex matches a serial number with either one or two
+    #       digits in the "index" position
+    # Back References:
+    # $1 initial white space
+    # $2 the whole serial number
+    # $3 YYYYMMDD, the date part of the serial number
+    # $4 the "index" of the serial number (0 - 99 for any given day)
+    # $5 rest of the line
+    #                     $1  $2   $3       $4        $5
+    my $serialExpr = qr/^(\s+)((2[01]\d{6})(\d{1,2}))(.*)$/;
+
+    # year is 1900-based, mon is Zero-based, mday is 1-based. Go figure.
+    my $today = sprintf "%4d%02d%02d", ( localtime->year() + 1900 ), ( localtime->mon() + 1 ), localtime->mday();
+
+    foreach my $line ( @$zoneData ) {
+
+	next unless ( $line =~ /$serialExpr/ );
+
+	my $serial = $2;
+	my $serialDate = $3;
+	my $index = $4;
+	my $newSerial = undef;
+
+	# this logic forces a two digit "index" field in the serial number
+	if ( $serialDate == $today ) {
+	    $newSerial = sprintf "%8d%02d", $serialDate, ( $index + 1 );
+	} else {
+	    $newSerial = sprintf "%8d%02d", $today, 1;
+	}
+
+	$returnValue = ( $line =~ s/$serialExpr/$1$newSerial$5/ );
+
+	last;
+    }
+
+    $returnValue;
+}
+
 =pod
 
 =head1 NAME
@@ -1057,11 +1127,11 @@ addon_bulk-dns-add.cgi
 
 =head1 SYNOPSIS
 
-Generate a list of hostnames and IP addresses in BIND zone file format. The list is suitable for copying and pasting into an zone file editor session.
+Generate a list of hostnames and IP addresses in BIND zone file format. Then update the zone file(s) and present them to the user for committing the changes.
 
 =head1 DESCRIPTION
 
-addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template" (consisting of a prefix and a starting number), a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of generating the zone lines. The user must then copy the desired lines and paste them into an editor session in which they have open the desired BIND zone file.
+addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template" (consisting of a prefix and a starting number), a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of generating the zone lines. It calls itself again presenting the user with a colored difference listing between the exisiing zone file and what will replace it. In the last step, the user may commit the zone file. The file is then distributed to the other DNS servers in the cluster.
 
 =head1 FILES
 
