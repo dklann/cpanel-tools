@@ -803,7 +803,7 @@ sub commitChanges( $ ) {
 
 	if ( $pushChanges ) {
 	    die( "Error pushing changes to cluster servers ($!). Stopped" )
-		unless ( pushChanges( $w, ( $forward_domain, ( $do_reverse_domain ? $reverse_domain : undef ))));
+		unless ( pushChanges( $w, ( $forward_domain, $reverse_domain )));
 	}
     } else {
 
@@ -1147,6 +1147,8 @@ sub pushChanges( $@ ) {
     my $exitCode = 0;		# boolean 'true', 'false' (false is good)
 
     foreach my $domain ( @domains ) {
+
+	next unless ( $domain );
 
 	unless ( $exitCode ) {
 
