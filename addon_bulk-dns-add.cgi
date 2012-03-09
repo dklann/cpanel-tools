@@ -8,6 +8,12 @@
 #    _|    _|  _|  _|            _|_|    _|      _|        _|        _|    _|  _|    _|    _|
 #    _|    _|  _|  _|        _|_|_|        _|_|  _|          _|_|_|    _|_|_|  _|    _|    _|
 
+############################################################################################
+#
+# This script enables bulk addition of BIND zone records. See the perldoc for more details.
+#
+############################################################################################
+
 # BEGIN is executed before anything else in the script
 # this sets up the search path for library modules
 BEGIN {
@@ -36,14 +42,13 @@ use Whostmgr::ACLS ();
 use Text::Wrap;
 use Text::Diff::FormattedHTML;
 use File::stat;
-
 use Net::IP qw(:PROC);
 
-my $debug = 1;
+use constant DEBUG  => 1;
 
 use constant BASE_URL => 'http://localhost:2086/json-api';
-use constant DEFAULT_COMMENT => 'Comments for this block of addresses. This will be placed above the block of addresses.';
 use constant NAMEDIR => '/var/named';
+use constant DEFAULT_COMMENT => 'Comments for this block of addresses. This will be placed above the block of addresses.';
 use constant SUFFIX => '.NEW';
 
 sub main();
@@ -58,12 +63,14 @@ sub newZoneFile ( $$$ );
 sub addOrReplace( $$$$ );
 sub networkAddr( $ );
 sub incrementSerial ( $$ );
+sub pushChanges( $@ );
 
 # run it
 main;
 
 1;
 
+# main process
 sub main() {
 
     my $w = CGI->new();
@@ -82,7 +89,7 @@ sub main() {
     Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_bulk-dns-add.cgi' );
 
     print
-	$w->p( 'phase: ', $w->param( 'phase' )), "\n" if ( $debug );
+	$w->p( 'phase: ', $w->param( 'phase' ) || '0' ), "\n" if ( DEBUG );
 
     # query the form parameters to see which phase we are in and what
     # task to perform during this run
@@ -466,7 +473,7 @@ sub getConfirmation( $ ) {
 	    }
 	    $hostCount++;
 	}
-	if ( $debug || $verbose ) {
+	if ( DEBUG || $verbose ) {
 	    print
 		$w->div({ -id => 'debugzonerecords' },
 			$w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): @bind is:' ), "\n",
@@ -602,7 +609,7 @@ sub processFormData( $ ) {
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
     # for details.
-    if ( $debug || Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    if ( DEBUG || Whostmgr::ACLS::checkacl( 'create-dns' )) {
 
 	# get all the parameters from the completed form
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
@@ -625,7 +632,7 @@ sub processFormData( $ ) {
 	    $reverse_domain = $existing_reverse_domain;
 	}
 
-	if ( $debug || $verbose ) {
+	if ( DEBUG || $verbose ) {
 	    print
 		$w->div( { -id => 'debugzonerecords' },
 			 $w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): forward zone records for: ', $forward_domain ), "\n",
@@ -717,7 +724,7 @@ sub commitChanges( $ ) {
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
     # for details.
-    if ( $debug || Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    if ( DEBUG || Whostmgr::ACLS::checkacl( 'create-dns' )) {
 
 	# get all the parameters from the completed form
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
@@ -727,6 +734,8 @@ sub commitChanges( $ ) {
 
 	my $forward_domain = undef;
 	my $reverse_domain = undef;
+
+	my $pushChanges = undef;
 
 	$forward_domain = $existing_forward_domain;
 	if ( $do_reverse_domain ) {
@@ -741,14 +750,16 @@ sub commitChanges( $ ) {
 	if ( -r $newForwardZoneFileName ) {
 	    if ( -w $forwardZoneFileName ) {
 
-		if ( $debug ) {
+		if ( DEBUG ) {
 		    print
 			$w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): Would rename( ',
 			       $newForwardZoneFileName, ', ', $forwardZoneFileName, ')' ),
 			"\n";
+		    $pushChanges = 1;
 		} else {
 		    die( "Could not rename $newForwardZoneFileName to $forwardZoneFileName ($!). Stopped" )
 			unless ( rename( $newForwardZoneFileName, $forwardZoneFileName ));
+		    $pushChanges = 1;
 		}
 	    } else {
 		print
@@ -767,7 +778,7 @@ sub commitChanges( $ ) {
 	    if ( -r $newReverseZoneFileName ) {
 		if ( -w $reverseZoneFileName ) {
 
-		    if ( $debug ) {
+		    if ( DEBUG ) {
 			print
 			    $w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): Would rename( ',
 				   $newReverseZoneFileName, ', ', $reverseZoneFileName, ')' ),
@@ -790,6 +801,10 @@ sub commitChanges( $ ) {
 	    }
 	}
 
+	if ( $pushChanges ) {
+	    die( "Error pushing changes to cluster servers ($!). Stopped" )
+		unless ( pushChanges( $w, ( $forward_domain, ( $do_reverse_domain ? $reverse_domain : undef ))));
+	}
     } else {
 
     	print
@@ -817,7 +832,7 @@ sub authorizedRequest( $$$@ ) {
     # make a complete URL from the arguments passed in
     $URL = BASE_URL . '/' . $action . '?' . join( '&', @args );
 
-    # print $w->pre( Dumper( $URL )), "\n" if ( $debug );
+    # print $w->pre( Dumper( $URL )), "\n" if ( DEBUG );
 
     # see http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/ApiAuthentication
     if ( $request = HTTP::Request->new( GET => $URL )) {
@@ -829,11 +844,11 @@ sub authorizedRequest( $$$@ ) {
     if ( $response ) {
 	# print
 	#     $w->p( '$response from $ua->request():' ),
-	#     $w->pre( Dumper( $response )), "\n" if ( $debug ),;
+	#     $w->pre( Dumper( $response )), "\n" if ( DEBUG ),;
 
 	$jsonRef = processJSONresponse( $w, $action, $response->{'_content'} );
 
-	# print $w->pre( Dumper( $jsonRef )), "\n" if ( $debug );
+	# print $w->pre( Dumper( $jsonRef )), "\n" if ( DEBUG );
     } else {
 	print
 	    $w->p( 'ERROR: missing response from $ua->request()' ),
@@ -893,6 +908,7 @@ sub processJSONresponse( $$$ ) {
     $jsonRef;
 }
 
+# display a message based on cPanel API JSON data
 sub apiMessageDisplay ( $$$ ) {
     my $w = shift;
     my $response = shift;
@@ -1072,7 +1088,7 @@ sub networkAddr( $ ) {
 
 # increment the serial number for the zone in the array Ref $zoneData
 # this subroutine will work properly until 31 December 2199
-# returns the value of the s/// expression with the updated zone in the array Ref
+# returns the value of the s/// operation with the updated zone in the array Ref
 sub incrementSerial ( $$ ) {
     my $w = shift;
     my $zoneData = shift;
@@ -1119,6 +1135,53 @@ sub incrementSerial ( $$ ) {
     $returnValue;
 }
 
+# spread the changes to the other servers in the cluster
+# see http://docs.cpanel.net/twiki/pub/AllDocumentation/TrainingResources/TrainingSlides09/DNS_Cluster_Configuration.pdf
+# for more information about /scripts/dnscluster
+sub pushChanges( $@ ) {
+    my $w = shift;
+    my @domains = @_;
+
+    my $command = undef;
+    my $returnValue = undef;	# boolean 'true', 'false' (true is good)
+    my $exitCode = 0;		# boolean 'true', 'false' (false is good)
+
+    foreach my $domain ( @domains ) {
+
+	unless ( $exitCode ) {
+
+	    $command = '/scripts/dnscluster synczone ' . $domain;
+
+	    if ( DEBUG ) {
+		print
+		    $w->p( 'DEBUG: pushChanges: would run system( ', $command, ' )' ),
+		    "\n";
+	    } else {
+		print $w->start_p(), "\n";
+		$exitCode = system( $command ),
+		print $w->end_p(), "\n";
+	    }
+	}
+    }
+
+    # non-zero $exitCode means one of the commands failed
+    if ( $exitCode ) {
+
+	print
+	    $w->p( { -style => 'color:red;' },
+		   'Exception: system( ', $command, ' ) exited with non-zero status: ', $returnValue,
+	    ),
+	    "\n";
+	$returnValue = 0;
+
+    } else {
+
+	$returnValue = 1;
+    }
+
+    $returnValue;
+}
+
 =pod
 
 =head1 NAME
@@ -1131,7 +1194,7 @@ Generate a list of hostnames and IP addresses in BIND zone file format. Then upd
 
 =head1 DESCRIPTION
 
-addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template" (consisting of a prefix and a starting number), a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of generating the zone lines. It calls itself again presenting the user with a colored difference listing between the exisiing zone file and what will replace it. In the last step, the user may commit the zone file. The file is then distributed to the other DNS servers in the cluster.
+addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template" (consisting of a prefix and a starting number), a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of generating the zone lines. It calls itself again presenting the user with a colored difference listing between the exisiing zone file and what will replace it. In the last step, the user may commit the zone file. The file is then distributed to the other DNS servers in the cluster using the I</scripts/dnscluster> command.
 
 =head1 FILES
 
