@@ -31,16 +31,16 @@ done
 test "${HTML}" && echo "<pre>"
 
 # reload this host (the master) first
+test "${VERBOSE}" && echo "Reloading cpanel (rndc reload) ...\c"
 ${RNDC} reload
 
 # reload each "DNS-only" server
 for server in ${dnsOnlyServers}
 do
-    test "${VERBOSE}" && echo "Reloading ${server} (rndc reload) ...\c"
+    test "${VERBOSE}" && echo "Reloading ${server} (rndc -s ${server} reload) ... \c"
     if rndc -s ${server} reload
     then
 	exitVal=${?}
-	test "${VERBOSE}" && echo "Done."
     else
 	exitVal=${?}
 	test "${VERBOSE}" && echo "${HTML:?<b>}Did NOT complete successfully.${HTML:?</b>}"
