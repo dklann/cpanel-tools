@@ -370,7 +370,7 @@ sub getFormData( $ ) {
 			   -id => 'verbose',
 			   -name => 'verbose',
 			   -value => 'ON',
-			   -label => 'Verbose processing',
+			   -label => 'Verbose processing (AKA "debugging")',
 		       ),
 		   ),
 	    ), "\n";
