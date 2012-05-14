@@ -759,6 +759,8 @@ sub commitChanges( $ ) {
 		} else {
 		    die( "Could not rename $newForwardZoneFileName to $forwardZoneFileName ($!). Stopped" )
 			unless ( rename( $newForwardZoneFileName, $forwardZoneFileName ));
+
+		    # Will not reach this if there was an error.
 		    $pushChanges = 1;
 		}
 	    } else {
@@ -774,6 +776,8 @@ sub commitChanges( $ ) {
 		), "\n";
 	}
 
+	# We do not set $pushChanges here because we will have already set it above,
+	# and we will die() appropriately if something goes wrong here.
 	if ( $do_reverse_domain ) {
 	    if ( -r $newReverseZoneFileName ) {
 		if ( -w $reverseZoneFileName ) {
@@ -804,6 +808,14 @@ sub commitChanges( $ ) {
 	if ( $pushChanges ) {
 	    die( "Error pushing changes to cluster servers ($!). Stopped" )
 		unless ( pushChanges( $w, ( $forward_domain, $reverse_domain )));
+
+	    print
+		$w->p(
+		    'Update of ',
+		    $forward_domain,
+		    $reverse_domain ? " and $reverse_domain " : ' ',
+		    'completed successfully',
+		), "\n";
 	}
     } else {
 
@@ -1136,6 +1148,7 @@ sub incrementSerial ( $$ ) {
 }
 
 # spread the changes to the other servers in the cluster
+# Return 0 if anything goes wrong.
 # see http://docs.cpanel.net/twiki/pub/AllDocumentation/TrainingResources/TrainingSlides09/DNS_Cluster_Configuration.pdf
 # for more information about /scripts/dnscluster
 sub pushChanges( $@ ) {
@@ -1146,6 +1159,7 @@ sub pushChanges( $@ ) {
     my $returnValue = undef;	# boolean 'true', 'false' (true is good)
     my $exitCode = 0;		# boolean 'true', 'false' (false is good)
 
+    # synchronize each individual domain with the other servers
     foreach my $domain ( @domains ) {
 
 	next unless ( $domain );
@@ -1167,6 +1181,7 @@ sub pushChanges( $@ ) {
     }
 
     # non-zero $exitCode means one of the commands failed
+    # Reload all of the servers if all went will with the synczone calls.
     if ( $exitCode ) {
 
 	print
@@ -1178,7 +1193,42 @@ sub pushChanges( $@ ) {
 
     } else {
 
-	$returnValue = 1;
+	# now issue 'rndc reload' to all the DNS-only servers
+	# NB: this depends on proper configuration of named.conf and of /etc/rndc.keys.
+	# See /usr/local/admin/dns/reload-dns.sh for more details.
+	$exitCode = undef;
+	$command = '/usr/local/admin/dns/reload-dns.sh';
+
+	if ( -x $command ) {
+
+	    print $w->start_pre(), "\n";
+	    $exitCode = system( $command, ( ( DEBUG ) ? '--verbose' : '' ));
+	    print $w->end_pre(), "\n";
+
+	    if ( $exitCode == 0 ) {
+
+		$returnValue = 1;
+
+	    } else {
+
+		print
+		    $w->p( { -style => 'color:red;' },
+			   'Exception: system( ', $command, ' ) exited with non-zero status: ', $returnValue,
+		    ),
+		    "\n";
+		$returnValue = 0;
+	    }
+
+	} else {
+
+	    print
+		$w->p( { -style => 'color:red;' },
+		       'Exception: system( ', $command, ' ) is not executable. Please contact a cPanel administrator',
+		),
+		"\n";
+	    $returnValue = 0;
+
+	}
     }
 
     $returnValue;
