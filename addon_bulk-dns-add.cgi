@@ -115,7 +115,7 @@ sub getFormData( $ ) {
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
     # for details.
-    if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    if ( DEBUG || Whostmgr::ACLS::checkacl( 'create-dns' )) {
 	my $ua = LWP::UserAgent->new;
 
 	print
@@ -425,7 +425,7 @@ sub getConfirmation( $ ) {
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
     # for details.
-    if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    if ( DEBUG || Whostmgr::ACLS::checkacl( 'create-dns' )) {
 
 	# get all the parameters from the completed form
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
