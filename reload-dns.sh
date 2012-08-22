@@ -9,6 +9,8 @@
 dnsOnlyServers=( 10.123.128.11 10.123.128.12 10.123.128.211 10.123.128.212 )
 exitVal=
 
+export PATH=/usr/sbin:${PATH}
+
 # ensure we can see the executable
 RNDC=${RNDC:-$(which rndc)}
 RNDC=$(test -x ${RNDC} && echo ${RNDC} || { echo "Cannot find rndc executable, exiting"; exit 3; })
