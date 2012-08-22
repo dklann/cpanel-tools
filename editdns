@@ -1,0 +1,369 @@
+#!/bin/zsh
+#
+# Airstream Communications, LLC
+# DNS support tools
+#
+# editdns: edit a BIND-style zone file with robust sanity checking.
+# Usage: editdns zonesfile
+#
+# Note: this script uses ZSH-specific facilities
+#
+# Note: Except when called with the --list option, this script requires root privileges
+#
+
+# default BIND configuration file is /etc/named.conf
+BINDconf=${BIND_CONF:-${ROOT:-/}etc/named.conf}
+
+# default zone file location from the BIND configuration
+dbDir=$(awk '/^[[:space:]]+directory/{print $2}' ${BINDconf} | tr -d '[";]')
+
+# set the defalt editor their preference, else vi
+EDITOR=${VISUAL:-${EDITOR:-vi}}
+
+zmodload zsh/stat
+
+usage () {
+
+  cat <<-EOF
+Usage: editdns [ --verbose ] [ --list ] [ --editor <editor> ] [ domain-name ]
+
+Options:
+--editor (-e)	Specify an editor (vi, nano, pico, etc.)
+--help (-h)	This help
+--list (-l)	List all configured zones
+--verbose (-v)	Be chatty about what is going on
+
+- When called with --list (-l) the 'zone-name' parameter is ignored and you do not need root credentials.
+- The --editor (-e) named must exist as an executable in /bin or /usr/bin
+- <domain-name> is the name of a DNS domain without the '.db' zone file extension
+EOF
+}
+
+# sort a list of IP addresses
+ipsort () {
+  sort --field-separator='.' --key=1n,1 --key=2n,2 --key=3n,3 --key=4n,4
+}
+
+# sort a list of in-addr.arpa names
+in-addrsort () {
+  sort --field-separator='.' --key=3n,3 --key=2n,2 --key=1n,1
+}
+
+# return the full path to the zone file for the named zone (domain)
+getZoneFile () {
+  local zoneName=${1:?"Name a domain for which to retrieve a zone file."}
+  local returnValue=0
+
+  (( VERBOSE )) && echo "Getting zone filename for domain ${zoneName}." >&2
+  # get the zone file
+  if zoneFile=$(egrep -A 3 "^zone[[:space:]]+\"${zoneName}\"" ${BINDconf} | egrep '^[[:space:]]+file' | head -n 1 | cut -d'"' -f2)
+  then
+    if test -n "${zoneFile}"
+    then
+      (( VERBOSE )) && echo "Found zone file ${zoneFile}." >&2
+
+      # prepend dbDir if zoneFile is a relative pathname
+      if expr match ${zoneFile} '[^/]' > /dev/null
+      then
+	zoneFile=${dbDir}/${zoneFile}
+	(( VERBOSE )) && echo "Full path to zone file: ${zoneFile}." >&2
+      fi
+      if test -r ${zoneFile}
+      then
+	echo ${zoneFile}
+      else
+	echo "Configuration file ${zoneFile} for ${zoneName} not found in ${dbDir}." >&2
+	returnValue=3
+      fi
+    else
+      echo "Was not able to get a zone file name frome ${BINDconf}." >&2
+      returnValue=2
+    fi
+  else
+    echo "Configuration file for ${zoneName} not found." >&2
+    returnValue=1
+  fi
+
+  return ${returnValue}
+}
+
+# set the SOA serial number field to a proper value
+newSerialNumber() {
+  local zoneFileName=${1:?"Need a zone filename to proceed."}
+
+  zmodload zsh/datetime
+  today=$(strftime '%Y%m%d' ${EPOCHSECONDS})
+  # index is a two-digit, Zero-filled number
+  typeset -Z 2 index=1
+
+  # get the current serial number
+  # Note that this presumes all zone files have been touched since 1999
+  # This also strips any comments from the end of the line containing the serial number
+  serial=$(pcregrep -o '^\s+20[0-9][0-9][0-9][0-9][0-9][0-9][0-9]{1,2}' ${zoneFileName} | tr -d '[[:space:]]' | sed -r -e 's/[[:space:]]*;.*//')
+  (( VERBOSE )) && echo "current serial number for ${zoneFileName}: ${serial} \c" >&2
+  # lop off the two-digit index
+  serialDate=${serial%??}
+  if (( serialDate == today ))
+  then
+    (( newSerial = serial + 1 ))
+  else
+    newSerial=${today}${index}
+  fi
+  (( VERBOSE )) && echo "new serial number: ${newSerial}" >&2
+
+  # replace the serial number in the zone file
+  sed -i -r -e "s/^([[:space:]]+)20[0-9][0-9][0-9][0-9][0-9][0-9][0-9]{1,2}/\1${newSerial}/" ${zoneFileName}
+}
+
+# publish the changes and reload the named daemons
+pushChanges() {
+  local domain=${1:?"Need a domain for which to push changes."}
+
+  local returnValue=0
+
+  # this file seems to be authoritative on whether we are clustered
+  if test -f ${ROOT:-/}var/cpanel/useclusteringdns
+  then
+
+    # push the zones to the slave servers
+    if test -x ${ROOT:-/}scripts/dnscluster && ${ROOT:-/}scripts/dnscluster synczone ${domain}
+    then
+      echo "Synchronized ${domain}"
+    else
+      echo "Could not synchronize ${domain} (${?}). Please contact sysadmin@wins.net." >&2
+      returnValue=1
+    fi
+  fi
+
+  # reload the name server
+  if ${ROOT:-/}usr/local/admin/dns/reload-dns.sh ${VERBOSE:+"--verbose"}
+  then
+    echo "Slave named instances successfully reloaded."
+  else
+    echo "Could not reload name service (${?}). Please contact sysadmin@wins.net." >&2
+    returnValue=2
+  fi
+
+  return $returnValue;
+}
+
+# use getopt to parse the command line args
+TEMP=$(getopt -o e:hlv --long editor:,help,list-files,verbose -n ${0:t} -- "${@}")
+if [ ${?} != 0 ] ; then echo "Terminating..." >&2 ; exit 1 ; fi
+# Note the quotes around '$TEMP': they are essential!
+eval set -- "${TEMP}"
+while :
+do
+  case "${1}" in
+    -e|--edit*) editor=${2} ; shift 2 ;;
+    -[?h]|--help) usage ; exit ;;
+    -l|--list*) LISTZONES=1 ; shift ;;
+    -v|--verb*) VERBOSE=1 ; shift ;;
+    --) shift ; break ;;
+    *) echo "Internal error!" ; exit 1 ;;
+  esac
+done
+
+if test -n "${LISTZONES}"
+then
+  for domain in $(awk '/^zone[[:space:]]/{print $2}' ${BINDconf} | tr -d '"' | ipsort | uniq)
+  do
+    zoneFile=$(grep -A 3 "${domain}" ${BINDconf} | awk '/^[[:space:]]+file[[:space:]]/{print $2}' | tr -d '[";]' | head -n 1)
+    stat -s -H zoneFileMeta ${zoneFile}
+    printf '%42s: %10s %8s %-8s %19s %s\n' ${domain} ${zoneFileMeta[mode]} ${zoneFileMeta[uid]} ${zoneFileMeta[gid]} ${zoneFileMeta[mtime]} ${zoneFile}
+  done
+else
+
+  DOMAIN=${1:?"Please specify a domain name to edit."}
+
+  # determine the full path to the chosen editor
+  if test -n "${editor}"
+  then
+    choices=( $(whence ${editor}) )
+    for choice in ${choices}
+    do
+      if test -x ${choice}
+      then
+        export EDITOR=${choice:t}
+        export VISUAL=${choice:t}
+        export SUDO_EDITOR=${choice:t}
+      fi
+    done
+  fi
+
+  LOCKFILE=${TMP:-${ROOT:-/}tmp}/${DOMAIN}.lock
+  if test -r ${LOCKFILE}
+  then
+    echo "Found existing lock file. If you are certain nobody is editing this zone file, remove ${LOCKFILE} and try again."
+  else
+
+    # remove the lock file under most exit conditions
+    trap "rm -f ${LOCKFILE} ; exit ;" 0 1 2 15
+
+    if zoneFile=$(getZoneFile ${DOMAIN})
+    then
+      # get current zone file meta info (owner, group, perms, etc.)
+      stat -o -H zoneFileMeta ${zoneFile}
+
+      if TMPZONEFILE=$(mktemp -t ${zoneFile:t}-XXXXXXX)
+      then
+        if cp -p ${zoneFile} ${TMPZONEFILE}
+        then
+
+	  # clean up after ourself
+	  trap "rm -f ${TMPZONEFILE}; exit;" 0 1 2 15
+
+          read ready\?"About to edit temporary zone file for ${DOMAIN}. Do NOT change the serial number (press <ENTER> to continue). "
+          sudoedit ${TMPZONEFILE}
+
+	  # cmp returns success if the files are identical
+          if ! cmp ${zoneFile} ${TMPZONEFILE} > /dev/null 2>&1
+          then
+
+            (( VERBOSE )) && echo "Updating the serial number in ${TMPZONEFILE}." >&2
+            if newSerialNumber ${TMPZONEFILE}
+            then
+
+              read ready\?"Press <Enter> to view differences between the old and new zone files: "
+              (
+		# this is disgusting, but it enables us to display aligned column headers over the sdiff output
+		current="  CURRENT CONFIGURATION  "
+		new="  NEW CONFIGURATION  "
+		cLen=$(echo "${current}" | wc -c)
+		nLen=$(echo "${new}"|wc -c)
+		c=$(( ( COLUMNS / 4 ) - ( cLen / 2 ) ))
+		s=$(( COLUMNS / 2 - ( c + cLen ) ))
+		n=$(( ( COLUMNS / 4 * 3 - ( nLen / 2 )) - ( c + cLen + s ) ))
+		echo | perl -ne "print q( ) x ${c}, q(${current}), q( ) x ${s}, q(|), q( ) x ${n}, q(${new}), qq(\n);"
+		sdiff -w${COLUMNS} --suppress-common-lines --ignore-all-space ${zoneFile} ${TMPZONEFILE}
+	      ) | less -M -PM"- less (Press q to quit)- ?f%f\ ..?ltline\ %lt\ .?e(END)%t"
+
+              read ready\?"Press <Enter> to commit changes to ${zoneFile}. Press <Ctrl-C> to abort this change: "
+              if mv ${TMPZONEFILE} ${zoneFile}
+              then
+                # restore perms from the original zone file
+		# we have to strip off the left-most four octal digits else chmod gets confused
+                chmod ${zoneFileMeta[mode]#????} ${zoneFile}
+                chown ${zoneFileMeta[uid]}:${zoneFileMeta[gid]} ${zoneFile}
+
+                (( VERBOSE )) && echo "Publishing DNS changes..." >&2
+                if ! pushChanges ${DOMAIN}
+                then
+                  echo "Could not publish DNS changes (${?}). Contact sysadmin@wins.net."
+                fi
+              else
+                echo "Could not replace ${zoneFile} with ${TMPZONEFILE} (${?}). Please contact sysadmin@wins.net."
+              fi
+            else
+              echo "Error updating the serial number in ${TMPZONEFILE} (${?}). Please edit this file again or contact sysadmin@wins.net."
+            fi
+          else
+            echo "Did not detect any changes to ${zoneFile}. NOT pushing changes to name servers."
+          fi
+        else
+          echo "Could not copy ${zoneFile} to ${TMPZONEFILE}."
+        fi
+      else
+        echo "Could not create temporary file (${?}). Please correct issues and try again."
+      fi
+    else
+      echo "Could not determine the zone file for domain ${DOMAIN}. Please ensure you entered the correct domain name."
+    fi
+  fi # LOCKFILE check
+fi
+
+
+# src_backup="/var/named/primary/backup/$zone.bak"
+# src_lock="$src_file.lock"
+# final_cmd="sudo /usr/local/bin/dns reload"
+# final_msg="$src_file changed, running ${final_cmd}..."
+
+# if [ ! -f $src_file ]; then
+#       echo "The src_file $src_file doesn't exist!"
+#       exit 1
+# fi
+
+# # Check existing lock src_file.
+# if [ -f "$src_lock" ]; then
+#       echo
+#       echo "Lock file present, $src_file is currently being editted by someone else."
+#       echo "`ls -al $src_lock`"
+#       echo "Exiting."
+#       echo
+#       exit 0
+# fi
+
+# # Touch lock file
+# $touchcmd "$src_lock"
+
+# # Backup current alias file
+# if [ -f "$src_backup" ]; then
+#       $rmcmd -f "$src_backup"
+# fi
+# $cpcmd "$src_file" "$src_backup"
+# $chmodcmd 644 "$src_backup"
+
+# # Check if alternate editor defined
+# # If it is and you are not root, set editor to pico
+# # Unsave to allow user's editor to be VI when sudoing!
+
+# if [ $EDITOR ]; then
+#       editorcmd=$EDITOR
+# else
+#       editorcmd=${default_editor}
+# fi
+
+# $editorcmd "$src_file"
+
+# # Editting done, remove the lock file
+# $rmcmd "$src_lock"
+
+# # See if any changes made
+# output="`$diffcmd $src_file $src_backup`"
+# if [ "$output" ]; then
+#       echo
+#       echo -e "\tChecking zone ${zone}\n\tNOTE: the 'loaded' message does NOT mean named was reloaded ...\n"
+#       if ${checkzone} ${zone} ${src_file}
+#       then
+#               echo
+#               echo "Would you like to reload DNS? (y/n)"
+#               read answer
+
+#               if [ "$answer" = "y" ]; then
+#                       echo "$final_msg"
+#                       $final_cmd
+#               fi
+#       else
+#               echo "Check of zone failed. Please correct this zone and re-run editdns"
+#       fi
+# else
+#         echo
+#         echo "No changes were made to $src_file , exiting."
+#         echo
+# fi
+
+exit
+
+# Local Variables: ***
+# mode:shell-script ***
+# indent-tabs-mode: f ***
+# sh-indentation: 2 ***
+# sh-basic-offset: 2 ***
+# sh-indent-for-do: 0 ***
+# sh-indent-after-do: + ***
+# sh-indent-comment: t ***
+# sh-indent-after-case: + ***
+# sh-indent-after-done: 0 ***
+# sh-indent-after-else: + ***
+# sh-indent-after-if: + ***
+# sh-indent-after-loop-construct: + ***
+# sh-indent-after-open: + ***
+# sh-indent-after-switch: + ***
+# sh-indent-for-case-alt: + ***
+# sh-indent-for-case-label: + ***
+# sh-indent-for-continuation: + ***
+# sh-indent-for-done: 0 ***
+# sh-indent-for-else: 0 ***
+# sh-indent-for-fi: 0 ***
+# sh-indent-for-then: 0 ***
+# End: ***
