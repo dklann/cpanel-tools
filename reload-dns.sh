@@ -7,7 +7,7 @@
 ############################################################################
 
 dnsOnlyServers=( 10.123.128.11 10.123.128.12 10.123.128.211 10.123.128.212 )
-exitVal=
+exitVal=0
 
 export PATH=/usr/sbin:${PATH}
 
@@ -35,12 +35,13 @@ test "${HTML}" && echo "<pre>"
 # reload this host (the master) first
 test "${VERBOSE}" && echo "Reloading cpanel (rndc reload) ...\c"
 ${RNDC} reload
+exitVal=${?}
 
 # reload each "DNS-only" server
 for server in ${dnsOnlyServers}
 do
     test "${VERBOSE}" && echo "Reloading ${server} (rndc -s ${server} reload) ... \c"
-    if rndc -s ${server} reload
+    if ${RNDC} -s ${server} reload
     then
 	exitVal=${?}
     else
