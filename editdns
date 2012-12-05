@@ -6,13 +6,14 @@
 # editdns: edit a BIND-style zone file with robust sanity checking.
 # Usage: editdns zonesfile
 #
-# Note: this script uses ZSH-specific facilities
+# Note: this script uses ZSH-specific facilities (like loadable modules)
 #
 # Note: Except when called with the --list option, this script requires root privileges
 #
 
 zmodload zsh/stat
 zmodload zsh/termcap
+zmodload zsh/datetime
 
 ##############################################################################
 #
@@ -90,7 +91,6 @@ getZoneFile () {
 newSerialNumber() {
   local zoneFileName=${1:?"Need a zone filename to proceed."}
 
-  zmodload zsh/datetime
   today=$(strftime '%Y%m%d' ${EPOCHSECONDS})
   # index is a two-digit, Zero-filled number
   typeset -Z 2 index=1
@@ -205,113 +205,118 @@ then
 else
 
   # from here to the end of the script requires elevated privileges
-
-  DOMAIN=${1}
-  if test -n "${DOMAIN}"
+  if (( UID == 0 )) && test "${USER}" = root
   then
 
-    # determine the full path to the chosen editor
-    if test -n "${editor}"
+    DOMAIN=${1}
+    if test -n "${DOMAIN}"
     then
-      choices=( $(whence ${editor}) )
-      for choice in ${choices}
-      do
-        if test -x ${choice}
-        then
-          export EDITOR=${choice:t}
-          export VISUAL=${choice:t}
-          export SUDO_EDITOR=${choice:t}
-        fi
-      done
-    fi
 
-    LOCKFILE=${TMP:-${ROOT:-/}tmp}/${DOMAIN}.lock
-    if test -r ${LOCKFILE}
-    then
-      echo "${BOLD}Found existing lock file. If you are certain nobody is editing this zone file, remove ${LOCKFILE} and try again.${NORMAL}"
-    else
-
-      # remove the lock file under most exit conditions
-      trap "rm -f ${LOCKFILE} ; exit ;" 0 1 2 15
-
-      if zoneFile=$(getZoneFile ${DOMAIN})
+      # determine the full path to the chosen editor
+      if test -n "${editor}"
       then
-        # get current zone file meta info (owner, group, perms, etc.)
-        stat -o -H zoneFileMeta ${zoneFile}
-
-        if TMPZONEFILE=$(mktemp -t ${zoneFile:t}-XXXXXXX)
-        then
-          if cp -p ${zoneFile} ${TMPZONEFILE}
+	choices=( $(whence ${editor}) )
+	for choice in ${choices}
+	do
+          if test -x ${choice}
           then
+            export EDITOR=${choice:t}
+            export VISUAL=${choice:t}
+	    export SUDO_EDIT=${choice:t}
+          fi
+	done
+      fi
 
-            # clean up after ourself
-            trap "rm -f ${TMPZONEFILE}; exit;" 0 1 2 15
+      LOCKFILE=${TMP:-${ROOT:-/}tmp}/${DOMAIN}.lock
+      if test -r ${LOCKFILE}
+      then
+	echo "${BOLD}Found existing lock file. If you are certain nobody is editing this zone file, remove ${LOCKFILE} and try again.${NORMAL}"
+      else
 
-            read ready\?"${BOLD}About to edit temporary zone file for ${DOMAIN}. Do NOT change the serial number (press <ENTER> to continue).${NORMAL} "
-            sudoedit ${TMPZONEFILE}
+	# remove the lock file under most exit conditions
+	trap "rm -f ${LOCKFILE} ; exit ;" 0 1 2 15
 
-            # cmp returns success if the files are identical
-            if ! cmp ${zoneFile} ${TMPZONEFILE} > /dev/null 2>&1
+	if zoneFile=$(getZoneFile ${DOMAIN})
+	then
+          # get current zone file meta info (owner, group, perms, etc.)
+          stat -o -H zoneFileMeta ${zoneFile}
+
+          if TMPZONEFILE=$(mktemp -t ${zoneFile:t}-XXXXXXX)
+          then
+            if cp -p ${zoneFile} ${TMPZONEFILE}
             then
 
-              (( VERBOSE )) && echo "Updating the serial number in ${TMPZONEFILE}." >&2
-              if newSerialNumber ${TMPZONEFILE}
+              # clean up after ourself
+              trap "rm -f ${TMPZONEFILE}; exit;" 0 1 2 15
+
+              read ready\?"${BOLD}About to edit temporary zone file for ${DOMAIN}. Do NOT change the serial number (press <ENTER> to continue).${NORMAL} "
+              sudoedit ${TMPZONEFILE}
+
+              # cmp returns success if the files are identical
+              if ! cmp ${zoneFile} ${TMPZONEFILE} > /dev/null 2>&1
               then
 
-		# perform some screen real estate calculations, then display the differences (paginated with less(1))
-                read ready\?"${BOLD}Press <Enter> to view differences between the old and new zone files:${NORMAL} "
-		(
-		  # this is disgusting, but it enables us to display
-		  # aligned column headers over the sdiff output
-                  current="CURRENT CONFIGURATION"
-                  new="   NEW CONFIGURATION "
-                  cLen=${#current} # string length
-                  nLen=${#new}
-                  c=$(( ( COLUMNS / 4 ) - ( cLen / 2 ) ))
-                  s=$(( COLUMNS / 2 - ( c + cLen ) ))
-                  n=$(( ( COLUMNS / 4 * 3 - ( nLen / 2 )) - ( c + cLen + s ) ))
-                  echo | perl -ne "print q( ) x ${c}, q(${current}), q( ) x ( ${s} + ${n} ), q(${new}), qq(\n);"
-                  echo | perl -ne "print q(-) x ${COLUMNS}, qq(\n);"
+		(( VERBOSE )) && echo "Updating the serial number in ${TMPZONEFILE}." >&2
+		if newSerialNumber ${TMPZONEFILE}
+		then
 
-		  # display the difference between the current and changed (temporary) zone files
-                  sdiff -w${COLUMNS:-80} --suppress-common-lines --ignore-all-space ${zoneFile} ${TMPZONEFILE}
-                ) | less -M -PM"- less (Press q to quit)- ?f%f\ ..?ltline\ %lt\ .?e(END)%t"
+		  # perform some screen real estate calculations, then display the differences (paginated with less(1))
+                  read ready\?"${BOLD}Press <Enter> to view differences between the old and new zone files:${NORMAL} "
+		  (
+		    # this is disgusting, but it enables us to display
+		    # aligned column headers over the sdiff output
+                    current="CURRENT CONFIGURATION"
+                    new="   NEW CONFIGURATION "
+                    cLen=${#current} # string length
+                    nLen=${#new}
+                    c=$(( ( COLUMNS / 4 ) - ( cLen / 2 ) ))
+                    s=$(( COLUMNS / 2 - ( c + cLen ) ))
+                    n=$(( ( COLUMNS / 4 * 3 - ( nLen / 2 )) - ( c + cLen + s ) ))
+                    echo | perl -ne "print q( ) x ${c}, q(${current}), q( ) x ( ${s} + ${n} ), q(${new}), qq(\n);"
+                    echo | perl -ne "print q(-) x ${COLUMNS}, qq(\n);"
 
-                read ready\?"Press <Enter> to commit changes to ${zoneFile}. ${BOLD}Press <Ctrl-C> to abort this change:${NORMAL} "
-                if mv ${TMPZONEFILE} ${zoneFile}
-                then
-                  # restore perms from the original zone file
-                  # we have to strip off the left-most four octal digits else chmod gets confused
-                  chmod ${zoneFileMeta[mode]#????} ${zoneFile}
-                  chown ${zoneFileMeta[uid]}:${zoneFileMeta[gid]} ${zoneFile}
+		    # display the difference between the current and changed (temporary) zone files
+                    sdiff -w${COLUMNS:-80} --suppress-common-lines --ignore-all-space ${zoneFile} ${TMPZONEFILE}
+                  ) | less -M -PM"- less (Press q to quit)- ?f%f\ ..?ltline\ %lt\ .?e(END)%t"
 
-                  (( VERBOSE )) && echo "Publishing DNS changes..." >&2
-                  if ! pushChanges ${DOMAIN}
+                  read ready\?"Press <Enter> to commit changes to ${zoneFile}. ${BOLD}Press <Ctrl-C> to abort this change:${NORMAL} "
+                  if mv ${TMPZONEFILE} ${zoneFile}
                   then
-                    echo "${BOLD}Could not publish DNS changes (${?}). Contact sysadmin@wins.net.${NORMAL}"
+                    # restore perms from the original zone file
+                    # we have to strip off the left-most four octal digits else chmod gets confused
+                    chmod ${zoneFileMeta[mode]#????} ${zoneFile}
+                    chown ${zoneFileMeta[uid]}:${zoneFileMeta[gid]} ${zoneFile}
+
+                    (( VERBOSE )) && echo "Publishing DNS changes..." >&2
+                    if ! pushChanges ${DOMAIN}
+                    then
+                      echo "${BOLD}Could not publish DNS changes (${?}). Contact sysadmin@wins.net.${NORMAL}"
+                    fi
+                  else
+                    echo "${BOLD}Could not replace ${zoneFile} with ${TMPZONEFILE} (${?}). Please contact sysadmin@wins.net.${NORMAL}"
                   fi
-                else
-                  echo "${BOLD}Could not replace ${zoneFile} with ${TMPZONEFILE} (${?}). Please contact sysadmin@wins.net.${NORMAL}"
-                fi
+		else
+                  echo "${BOLD}Error updating the serial number in ${TMPZONEFILE} (${?}). Please edit this file again or contact sysadmin@wins.net.${NORMAL}"
+		fi
               else
-                echo "${BOLD}Error updating the serial number in ${TMPZONEFILE} (${?}). Please edit this file again or contact sysadmin@wins.net.${NORMAL}"
+		echo "${BOLD}Did not detect any changes to ${zoneFile}. NOT pushing changes to name servers.${NORMAL}"
               fi
             else
-              echo "${BOLD}Did not detect any changes to ${zoneFile}. NOT pushing changes to name servers.${NORMAL}"
+              echo "${BOLD}Could not copy ${zoneFile} to ${TMPZONEFILE}. Please contact sysadmin@wins.net.${NORMAL}"
             fi
           else
-            echo "${BOLD}Could not copy ${zoneFile} to ${TMPZONEFILE}. Please contact sysadmin@wins.net.${NORMAL}"
+            echo "${BOLD}Could not create temporary filename: mktemp failed (${?}). Please contact sysadmin@wins.net.${NORMAL}"
           fi
-        else
-          echo "${BOLD}Could not create temporary filename: mktemp failed (${?}). Please contact sysadmin@wins.net.${NORMAL}"
-        fi
-      else
-        echo "${BOLD}Could not determine the zone file for domain ${DOMAIN}. Please ensure you entered the correct domain name.${NORMAL}"
+	else
+          echo "${BOLD}Could not determine the zone file for domain ${DOMAIN}. Please ensure you entered the correct domain name.${NORMAL}"
+	fi
       fi
+    else
+      echo "${BOLD}Please specify a domain name to edit.${NORMAL}"
+      usage
     fi
   else
-    echo "${BOLD}Please specify a domain name to edit.${NORMAL}"
-    usage
+    echo "${BOLD}You must run this program with 'root' privileges. Try 'sudo ${0:t}' and see if that works better.${NORMAL}"
   fi
 fi
 
