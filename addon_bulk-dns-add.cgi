@@ -45,6 +45,7 @@ use File::stat;
 use Net::IP qw(:PROC);
 
 use constant DEBUG  => 1;
+use constant MWT_CPANEL => 0;	# oh this is painful
 
 use constant BASE_URL => 'http://localhost:2086/json-api';
 use constant NAMEDIR => '/var/named';
@@ -805,7 +806,8 @@ sub commitChanges( $ ) {
 	    }
 	}
 
-	if ( $pushChanges ) {
+	# do not push changes if this is the MWT cPanel server
+	if ( $pushChanges && ! MWT_CPANEL ) {
 	    die( "Error pushing changes to cluster servers ($!). Stopped" )
 		unless ( pushChanges( $w, ( $forward_domain, $reverse_domain )));
 
