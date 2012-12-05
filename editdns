@@ -99,7 +99,7 @@ newSerialNumber() {
   # Note that this presumes all zone files have been touched since 1999
   # This also strips any comments from the end of the line containing the serial number
   serial=$(pcregrep -o '^\s+20[0-9][0-9][0-9][0-9][0-9][0-9][0-9]{1,2}' ${zoneFileName} | tr -d '[[:space:]]' | sed -r -e 's/[[:space:]]*;.*//')
-  (( VERBOSE )) && echo "Current serial number for ${zoneFileName}: ${serial} \c" >&2
+  (( VERBOSE )) && echo "Current serial number for ${zoneFileName}: ${BOLD}${serial}${NORMAL} \c" >&2
   # lop off the two-digit index
   serialDate=${serial%??}
   if (( serialDate == today ))
@@ -108,7 +108,7 @@ newSerialNumber() {
   else
     newSerial=${today}${index}
   fi
-  (( VERBOSE )) && echo "New serial number: ${newSerial}" >&2
+  (( VERBOSE )) && echo "New serial number: ${BOLD}${newSerial}${NORMAL}" >&2
 
   # replace the serial number in the zone file
   # Note: this function exits with the exit value of the sed(1) command; errors are handled in the calling context
@@ -249,7 +249,7 @@ else
               # clean up after ourself
               trap "rm -f ${TMPZONEFILE}; exit;" 0 1 2 15
 
-              read ready\?"${BOLD}About to edit temporary zone file for ${DOMAIN}. Do NOT change the serial number (press <ENTER> to continue).${NORMAL} "
+              read ready\?"About to edit temporary zone file for ${DOMAIN}. Do NOT change the serial number ${BOLD}(press <ENTER> to continue)${NORMAL}. "
               sudoedit ${TMPZONEFILE}
 
               # cmp returns success if the files are identical
@@ -288,9 +288,21 @@ else
                     chown ${zoneFileMeta[uid]}:${zoneFileMeta[gid]} ${zoneFile}
 
                     (( VERBOSE )) && echo "Publishing DNS changes..." >&2
-                    if ! pushChanges ${DOMAIN}
+                    if pushChanges ${DOMAIN}
                     then
-                      echo "${BOLD}Could not publish DNS changes (${?}). Contact sysadmin@wins.net.${NORMAL}"
+		      cat <<EOF
+
+
+Do you need to update one or more ${BOLD}reverse DNS${NORMAL} zone files?
+
+Be sure to run this script with the relevant ${BOLD}in-addr.arpa${NORMAL} domain name
+if any of your previous changes need to be reflected in a reverse lookup zone.
+
+${BOLD}Please contact sysadmin@wins.net if you have any questions.${NORMAL}
+
+EOF
+		    else
+                      echo "${BOLD}Could not publish DNS changes (${?}). Please Contact sysadmin@wins.net.${NORMAL}"
                     fi
                   else
                     echo "${BOLD}Could not replace ${zoneFile} with ${TMPZONEFILE} (${?}). Please contact sysadmin@wins.net.${NORMAL}"
