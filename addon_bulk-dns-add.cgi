@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-#WHMADDON:bulk-dns-add:Bulk DNS Generate (zonemaker)
+#WHMADDON:bulk-dns-add:Bulk DNS Generate (zonemaker):bulkcoffee160-scaled.jpg
 #ACLS:create-dns
 
 #      _|_|    _|                        _|                                                    
