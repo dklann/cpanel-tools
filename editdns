@@ -159,7 +159,7 @@ NORMAL="${termcap[me]}"
 
 # default BIND configuration file is /etc/named.conf, exit if it is not readable
 BINDconf=${BIND_CONF:-${ROOT:-/}etc/named.conf}
-test -r "${BINDconf}" || { echo "Error (0): Cannot find ${BINDconf}" ; exit ; }
+test -r "${BINDconf}" || { echo "Error (0): Cannot find a readable copy of ${BINDconf}. Got root?" ; exit ; }
 
 # default zone file location from the BIND configuration
 dbDir=$(awk '/^[[:space:]]+directory/{print $2}' ${BINDconf} | tr -d '[";]')
