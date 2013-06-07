@@ -174,6 +174,16 @@ sub getFormData( $ ) {
 	    $w->start_div({ -id => 'outer' }),
 	    "\n";
 
+	# see if they want to add a TTL, default is to NOT include them in the new records
+	print
+	    $w->checkbox(
+		-id => 'do_ttl',
+		-name => 'do_ttl',
+		-checked => 0,
+		-label => 'Add TTL for this block of addresses?',
+		-onClick => 'toggleVisibility(this, "ttl");toggleVisibility(this, "reverse-ttl");',
+	    ), "\n";
+
 	### forward domains
 	print
 	    $w->table ({ -border => '0', id => 't1' },
@@ -192,7 +202,7 @@ sub getFormData( $ ) {
 	    ), "\n";
 
 	# hide this <div> at first (style="display: none")
-	# the javascript function showAddNew() makes this visible and invisible
+	# the javascript function showAddNew() makes this visible and invisible (note that this is currently NOT implemented)
 	print
 	    $w->div({ -id => 'forward_domain_textfield', -style => 'display: none' },
 		    $w->table ({ -border => '0', -id => 't2' },
@@ -212,8 +222,30 @@ sub getFormData( $ ) {
 		    ), "\n"
 	    );
 
+	# hide this <div> at first (style="display: none")
+	# the javascript function toggleVisibility() makes this visible and invisible
+	print
+	    $w->div( { -id => 'ttl', -style => 'display: none' },
+		     $w->table ({ -border => '0', id => 'ttl1' },
+				$w->Tr({ -align => 'left' },
+				       $w->th({ -align => 'right' }, 'Enter a TTL for this address block:&nbsp;' ),
+				       $w->td(
+					   $w->textfield(
+					       -id => 'ttlData',
+					       -name => 'ttlData',
+					       -size => 5,
+					       -maxlength => 5,
+					       -onChange => 'validateNumericRange(this, "info_ttlData", 300, 86400, true)',
+					   ),
+				       ),
+				       $w->td({ -id => 'info_ttlData' }, '&nbsp;' ),
+				),
+		     ),
+	    ), "\n";
+
 	### in-addr.arpa (reverse) domains
 	print
+	    $w->br(),
 	    $w->checkbox(
 		-id => 'do_reverse_domain',
 		-name => 'do_reverse_domain',
@@ -223,7 +255,7 @@ sub getFormData( $ ) {
 	    );
 
 	# hide this <div> at first (style="display: none")
-	# the javascript function showAddNew() makes this visible and invisible
+	# the javascript function toggleVisibility() makes this visible and invisible
 	print
 	    $w->div( { -id => 'reverse_domain', -style => 'display: none' },
 		    $w->table ({ -border => '0', id => 't3' },
@@ -240,6 +272,7 @@ sub getFormData( $ ) {
 			       ),
 		    ),
 		    "\n",
+		     # this option is currently disabled and hidden, reserved for future use
 		    $w->div({ -id => 'reverse_domain_textfield', -style => 'display: none' },
 			    $w->table ({ -border => '0', -id => 't4' },
 				       $w->Tr({ -align => 'left' },
@@ -255,8 +288,31 @@ sub getFormData( $ ) {
 					      ),
 					      $w->td({ -id => 'info_reverse_domain' }, '&nbsp;' ),
 				       ),
-			    ), "\n"
-		    )
+			    ),
+		    ), "\n",
+		     # the visibility of this div is controlled by the checkbox (above) "do_ttl'
+		     $w->div( { -id => 'reverse-ttl', -style => 'display: none' },
+			      $w->table ({ -border => '0', id => 'reverse-ttl1' },
+					 $w->Tr({ -align => 'left' },
+						$w->th({ -align => 'right' },
+						       'Enter a TTL for this reverse address block:&nbsp;' .
+						       "<br />\n" .
+						       '(leave blank to use the forward TTL)&nbsp;'
+						),
+						$w->td(
+						    $w->textfield(
+							-id => 'reverse_ttlData',
+							-name => 'reverse_ttlData',
+							-size => 5,
+							-maxlength => 5,
+							-onChange => 'validateNumericRange(this, "info_reverse_ttlData", 300, 86400, true)',
+						    ),
+						),
+						$w->td({ -id => 'info_reverse_ttlData' }, '&nbsp;' ),
+					 ),
+			      ),
+			      "\n",
+		     ),
 	    );
 
 	# the base (CIDR /24) address
@@ -437,6 +493,8 @@ sub getConfirmation( $ ) {
 	my $ipv4end = $w->param( 'ipv4end' );
 	my $hostname_base = $w->param( 'hostname_base' );
 	my $hostname_offset = $w->param( 'hostname_offset' );
+	my $ttlData = $w->param( 'ttlData' );
+	my $reverse_ttlData = $w->param( 'reverse_ttlData' ) || $w->param( 'ttlData' );
 	my $comment = $w->param( 'comment' );
 	my $verbose = $w->param( 'verbose' );
 
@@ -489,17 +547,33 @@ sub getConfirmation( $ ) {
 	push ( @forward_zones, ( wrap( '; ', '; ', grep( !/^;$/, @comment )), "\n" ));
 
 
-	$formatString = '%-' . length( $hostname_base . '-xxx.' ) . "s\tIN\t%s\t%s\n";
+	# we have to construct the format string differently if there
+	# is a TTL defined. See also the stuff in sub addOrReplace()
+	if ( $ttlData ) {
+	    $formatString = '%-' . length( $hostname_base . '-xxx.' ) . "s\t%-5d\tIN\t%s\t%s\n";
+	} else {
+	    $formatString = '%-' . length( $hostname_base . '-xxx.' ) . "s\tIN\t%s\t%s\n";
+	}
 
 	# build an array of strings to be searched for in the zone files.
 	foreach my $record ( @bind ) {
 	    next unless ( $record->{ipv4address} );
 
 	    push( @forward_zones,
-		  sprintf( $formatString,
-			   $record->{resource},
-			   'A',
-			   $record->{ipv4address}
+		  (
+		   $ttlData ?
+		   sprintf( $formatString,
+			    $record->{resource},
+			    ( $ttlData > 0 ? $ttlData : '' ),
+			    'A',
+			    $record->{ipv4address}
+		   )
+		   :
+		   sprintf( $formatString,
+			    $record->{resource},
+			    'A',
+			    $record->{ipv4address}
+		   )
 		  )
 		);
 	}
@@ -508,16 +582,30 @@ sub getConfirmation( $ ) {
 	if ( $do_reverse_domain ) {
 	    push ( @reverse_zones, ( wrap( '; ', '; ', grep( !/^;$/, @comment )), "\n" ));
 
-	    $formatString = "%-3d\tIN\t%s\t%s.$forward_domain.\n";
+	    if ( $reverse_ttlData ) {
+		$formatString = "%-3d\t%-5d\tIN\t%s\t%s.$forward_domain.\n";
+	    } else {
+		$formatString = "%-3d\tIN\t%s\t%s.$forward_domain.\n";
+	    }
 
 	    for ( my $r = 0; $r <= $#bind; $r++ ) {
 		my $record = $bind[$r];
 		next unless ( $record->{ipv4address} );
 		push( @reverse_zones,
-		      sprintf( $formatString,
-			       $r,
-			       'PTR',
-			       $record->{resource}
+		      (
+		       $reverse_ttlData ?
+		       sprintf( $formatString,
+				$r,
+				( $reverse_ttlData > 0 ? $reverse_ttlData : '' ),
+				'PTR',
+				$record->{resource}
+		       )
+		       :
+		       sprintf( $formatString,
+				$r,
+				'PTR',
+				$record->{resource}
+		       )
 		      )
 		    );
 	    }
@@ -1028,10 +1116,15 @@ sub addOrReplace( $$$$ ) {
     foreach my $line ( @$newLines ) {
 
 	my @result = ();
+	my ( $hostName, $ttl, $class, $type, $resourceName );
 
 	# this line format is established in the subrouting getConfirmation() with variable $formatString
 	# and make sure everything is in lower case
-	my ( $hostName, $class, $type, $resourceName ) = split( ' ', $line );
+	if ( $w->param( 'ttlData' )) {
+	    ( $hostName, $ttl, $class, $type, $resourceName ) = split( ' ', $line );
+	} else {
+	    ( $hostName, $class, $type, $resourceName ) = split( ' ', $line );
+	}
 	# $hostName = lc( $hostName );
 	# $class = lc( $class );
 	# $type = lc( $type );
@@ -1039,7 +1132,7 @@ sub addOrReplace( $$$$ ) {
 
 	if ( $reverseZone ) {
 
-	    # reverse zones: replace the resource name (the right-hand field)
+	    # reverse zones: replace the resource name (the right-hand field) if a record already exists
 
 	    # back references (items in parentheses):
 	    # $1 - first word on the line (the hostname), what we search for
@@ -1051,7 +1144,11 @@ sub addOrReplace( $$$$ ) {
 	    #                      host       TTL          class     type  resource name
 	    my $searchExpr = qr/^($hostName)(\s+(\d+))*\s+($class)\s+(ptr)\s+(.*)\s*$/i;
 
-	    @result = map( { s/$searchExpr/$1$2\t$4\t$5\t$resourceName/; } @newContents );
+	    if ( $ttl ) {
+		@result = map( { s/$searchExpr/$1\t$ttl\t$4\t$5\t$resourceName/; } @newContents );
+	    } else {
+		@result = map( { s/$searchExpr/$1$2\t$4\t$5\t$resourceName/; } @newContents );
+	    }
 
 	    # the above map() call returns an array of success or undef
 	    # for each element of @newContents depending on the result of
@@ -1063,7 +1160,7 @@ sub addOrReplace( $$$$ ) {
 	    }
 	} else {
 
-	    # forward zones: replace the hostname (the left-hand field)
+	    # forward zones: replace the hostname (the left-hand field) if a record already exists
 
 	    # back references (items in parentheses):
 	    # $1 - first char on the line
@@ -1076,7 +1173,11 @@ sub addOrReplace( $$$$ ) {
 	    #                      host       TTL          class    type  resource name
 	    my $searchExpr = qr/^(([^;\s])+)(\s+(\d+))*\s+($class)\s+(a)\s+($resourceName)\s*$/i;
 
-	    @result = map( s/$searchExpr/$hostName$3\t$5\t$6\t$7/, @newContents );
+	    if ( $ttl ) {
+		@result = map( s/$searchExpr/$hostName\t$ttl\t$5\t$6\t$7/, @newContents );
+	    } else {
+		@result = map( s/$searchExpr/$hostName$3\t$5\t$6\t$7/, @newContents );
+	    }
 
 	    # the above map() call returns an array of success or undef
 	    # for each element of @newContents depending on the result of
@@ -1588,7 +1689,7 @@ function validateNumericRange (valfield,   // element to be validated
     }
 
     if (tfld < rmin || tfld > rmax) {
-	msg (infofield, "error", "ERROR: " + tfld + " is outside the valid range");
+	msg(infofield, "error", "ERROR: " + tfld + " is outside the valid range (" + rmin + " - " + rmax + ")");
 	setfocus(valfield);
 	return false;
     }
