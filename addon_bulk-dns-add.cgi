@@ -21,7 +21,8 @@ BEGIN {
     '/usr/local/cpanel',
     '/usr/local/cpanel/whostmgr/docroot/cgi',
     '/usr/local/cpanel/cpaddons',
-    '/home/dklann/perl5/lib/perl5';
+    '/home/dklann/perl5/lib/perl5',
+    '/home/dklann/perl5/lib/perl5/x86_64-linux';
 }
 
 use strict;
