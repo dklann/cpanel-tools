@@ -18,11 +18,12 @@
 # this sets up the search path for library modules
 BEGIN {
     unshift @INC,
-    '/usr/local/cpanel',
-    '/usr/local/cpanel/whostmgr/docroot/cgi',
     '/usr/local/cpanel/cpaddons',
     '/home/dklann/perl5/lib/perl5',
-    '/home/dklann/perl5/lib/perl5/x86_64-linux';
+    '/home/dklann/perl5/lib/perl5/x86_64-linux',
+    '/home/dklann/perl5/lib/perl5/i686-linux',
+    '/usr/local/cpanel/whostmgr/docroot/cgi',
+    '/usr/local/cpanel';
 }
 
 use strict;
