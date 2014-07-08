@@ -72,15 +72,15 @@ getZoneFile () {
       then
         echo ${zoneFile}
       else
-        echo "${0}: Error (3): Configuration file ${zoneFile} for ${domainName} not found in ${dbDir}." >&2
+        echo "${0:t}: Error (3): Configuration file ${zoneFile} for ${domainName} not found in ${dbDir}." >&2
         returnValue=3
       fi
     else
-      echo "${0}: Error (2): Unable to get a zone file name for domain ${domainName} from ${BINDconf}." >&2
+      echo "${0:t}: Error (2): Unable to get a zone file name for domain ${domainName} from ${BINDconf}." >&2
       returnValue=2
     fi
   else
-    echo "${0}: Error (1): Zone file configuration for ${domainName} not found in ${BINDconf}." >&2
+    echo "${0:t}: Error (1): Zone file configuration for ${domainName} not found in ${BINDconf}." >&2
     returnValue=1
   fi
 
@@ -167,6 +167,9 @@ dbDir=$(awk '/^[[:space:]]+directory/{print $2}' ${BINDconf} | tr -d '[";]')
 # set the defalt editor their preference, else vi
 EDITOR=${VISUAL:-${EDITOR:-vi}}
 
+# logger tag will contain this script name and the current PID
+loggerTag="${0:t}[${$}]"
+
 ##############################################################################
 #
 # Script Main Line
@@ -208,6 +211,9 @@ else
   if (( UID == 0 )) && test "${USER}" = root
   then
 
+    invokingUser=$(who am i | cut -d' ' -f1)
+    (( VERBOSE )) && echo "${invokingUser} seems to be running this instance of ${0:t}." >&2
+
     DOMAIN=${1}
     if test -n "${DOMAIN}"
     then
@@ -231,10 +237,13 @@ else
       if test -r ${LOCKFILE}
       then
 	echo "${BOLD}Found existing lock file. If you are certain nobody is editing this zone file, remove ${LOCKFILE} and try again.${NORMAL}"
+	logger  -t "${loggerTag}" -- "${invokingUser}: ERROR: Found existing lock file for ${DOMAIN}."
       else
 
 	# remove the lock file under most exit conditions
 	trap "rm -f ${LOCKFILE} ; exit ;" 0 1 2 15
+
+	logger -t "${loggerTag}" -- "${invokingUser}: wants to change zone file for ${DOMAIN}."
 
 	if zoneFile=$(getZoneFile ${DOMAIN})
 	then
@@ -247,7 +256,7 @@ else
             then
 
               # clean up after ourself
-              trap "rm -f ${TMPZONEFILE}; exit;" 0 1 2 15
+              trap "rm -f ${LOCKFILE} ${TMPZONEFILE}; exit;" 0 1 2 15
 
               read ready\?"About to edit temporary zone file for ${DOMAIN}. Do NOT change the serial number ${BOLD}(press <ENTER> to continue)${NORMAL}. "
               sudoedit ${TMPZONEFILE}
@@ -290,6 +299,10 @@ else
                     (( VERBOSE )) && echo "Publishing DNS changes..." >&2
                     if pushChanges ${DOMAIN}
                     then
+		      # ignore some signals
+		      trap '' 0 1 2 15
+		      read comment\?"${BOLD}Please type a brief 1-line comment describing the change you just made:${NORMAL} "
+		      logger -t "${loggerTag}" -- "${invokingUser}: ${zoneFile}: ${comment}"
 		      cat <<EOF
 
 
@@ -301,26 +314,35 @@ if any of your previous changes need to be reflected in a reverse lookup zone.
 ${BOLD}Please contact sysadmin@wins.net if you have any questions.${NORMAL}
 
 EOF
+		      # restore signals to clean up after we are done
+		      trap "rm -f ${LOCKFILE} ${TMPZONEFILE}; exit;" 0 1 2 15
 		    else
                       echo "${BOLD}Could not publish DNS changes (${?}). Please Contact sysadmin@wins.net.${NORMAL}"
+		      logger -t "${loggerTag}" -- "${invokingUser}: Could not publish DNS changes: pushChanges() returned ${?}."
                     fi
                   else
                     echo "${BOLD}Could not replace ${zoneFile} with ${TMPZONEFILE} (${?}). Please contact sysadmin@wins.net.${NORMAL}"
+		    logger -t "${loggerTag}" -- "${invokingUser}: Could not replace ${zoneFile} with ${TMPZONEFILE}: mv(1) returned ${?}."
                   fi
 		else
                   echo "${BOLD}Error updating the serial number in ${TMPZONEFILE} (${?}). Please edit this file again or contact sysadmin@wins.net.${NORMAL}"
+		  logger -t "${loggerTag}" -- "${invokingUser}: Error updating the serial number in ${TMPZONEFILE}: newSerialNumber returned ${?}."
 		fi
               else
 		echo "${BOLD}Did not detect any changes to ${zoneFile}. NOT pushing changes to name servers.${NORMAL}"
+		logger -t "${loggerTag}" -- "${invokingUser}: Did not detect any changes to ${zoneFile}. NOT pushing changes to name servers."
               fi
             else
-              echo "${BOLD}Could not copy ${zoneFile} to ${TMPZONEFILE}. Please contact sysadmin@wins.net.${NORMAL}"
+              echo "${BOLD}Could not copy ${zoneFile} to ${TMPZONEFILE} (${?}). Please contact sysadmin@wins.net.${NORMAL}"
+	      logger -t "${loggerTag}" -- "${invokingUser}: Could not copy ${zoneFile} to ${TMPZONEFILE}: cp(1) returned ${?}."
             fi
           else
             echo "${BOLD}Could not create temporary filename: mktemp failed (${?}). Please contact sysadmin@wins.net.${NORMAL}"
+	    logger -t "${loggerTag}" -- "${invokingUser}: Could not create temporary filename: mktemp returned ${?}."
           fi
 	else
           echo "${BOLD}Could not determine the zone file for domain ${DOMAIN}. Please ensure you entered the correct domain name.${NORMAL}"
+	  logger -t "${loggerTag}" -- "${invokingUser}: Could not determine the zone file for domain ${DOMAIN}."
 	fi
       fi
     else
