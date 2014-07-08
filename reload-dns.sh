@@ -6,7 +6,8 @@
 #
 ############################################################################
 
-dnsOnlyServers=( 10.123.128.11 10.123.128.12 10.123.128.211 10.123.128.212 )
+# this is the authoritative list of cPanel dns-only servers
+dnsOnlyServers=( $(cat ${ROOT:-/}var/cpanel/cluster/root/config_write-only_sync.cache )
 exitVal=0
 
 export PATH=/usr/sbin:${PATH}
@@ -30,7 +31,7 @@ do
   esac
 done
 
-test "${HTML}" && echo "<pre>"
+(( HTML )) && echo "<pre>"
 
 # reload this host (the master) first
 test "${VERBOSE}" && echo "Reloading cpanel (rndc reload) ...\c"
@@ -40,18 +41,18 @@ exitVal=${?}
 # reload each "DNS-only" server
 for server in ${dnsOnlyServers}
 do
-    test "${VERBOSE}" && echo "Reloading ${server} (rndc -s ${server} reload) ... \c"
+    (( VERBOSE )) && echo "Reloading ${server} (rndc -s ${server} reload) ... \c"
     if ${RNDC} -s ${server} reload
     then
 	exitVal=${?}
     else
 	exitVal=${?}
-	test "${VERBOSE}" && echo "${HTML:?<b>}Did NOT complete successfully.${HTML:?</b>}"
+	(( VERBOSE )) && echo "${HTML:?<b>}Did NOT complete successfully.${HTML:?</b>}"
 	# we encountered an error, so proceed no further
 	break
     fi
 done
 
-test "${HTML}" && echo "</pre>"
+(( HTML )) && echo "</pre>"
 
 exit ${exitVal}
