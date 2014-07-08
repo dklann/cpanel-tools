@@ -8,7 +8,7 @@
 
 # this is the authoritative list of cPanel dns-only servers
 clusterConfigCache=${ROOT:-/}var/cpanel/cluster/root/config_write-only_sync.cache
-dnsOnlyServers=( $([[ -r ${clusterConfigCache} ]] && cat ${clusterConfigCache}) )
+dnsOnlyServers=( $([[ -r ${clusterConfigCache} ]] && grep --perl-regexp '^\d+\.\d+\.\d+\.\d+$' ${clusterConfigCache}) )
 exitVal=0
 
 export PATH=/usr/sbin:${PATH}
