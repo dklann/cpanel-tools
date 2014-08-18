@@ -1063,6 +1063,13 @@ sub newZoneFile ( $$$ ) {
     close( ZF );
     chomp( @zoneFileContents );
 
+    # strip odd instances of ASCII representations of octal characters
+    # from the zone data
+    map { s/\\[[:digit:]]{1,3}//g; $_; } @zoneFileContents;
+
+    # also, strip trailing linefeeds from the zone data
+    map { s/$//g;$_; } @zoneFileContents;
+
     # replace the records if they exist, else add them to the end of the existing records
     @newZoneFileContents = addOrReplace ( $w, \@zoneFileContents, \@newLines, $reverseZone );
 
