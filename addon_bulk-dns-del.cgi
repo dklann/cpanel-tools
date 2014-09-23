@@ -1,6 +1,6 @@
 #!/usr/bin/perl
-#WHMADDON:bulk-dns-del:Bulk DNS Remove (zone un-maker)
-#ACLS:create-dns
+#WHMADDON:bulk-dns-del:Bulk DNS Removal (zone un-maker)
+#ACLS:kill-dns
 
 #      _|_|    _|                        _|                                                    
 #    _|    _|      _|  _|_|    _|_|_|  _|_|_|_|  _|  _|_|    _|_|      _|_|_|  _|_|_|  _|_|
@@ -64,6 +64,7 @@ sub addOrReplace( $$$$ );
 sub networkAddr( $ );
 sub incrementSerial ( $$ );
 sub pushChanges( $@ );
+sub select_css ();
 
 # run it
 main;
@@ -81,12 +82,21 @@ sub main() {
     print
 	$w->header( -expires => '-1D' ),
 	$w->start_html(
-	    -title => 'Bulk DNS Generate (zonemaker)',
-	    -script => join( "", @javaScript ),
+	    -title => 'Bulk DNS Removal (zone un-maker)',
+	    -script => [
+		 join( "", @javaScript ),
+		 qq{var forward = new OptionTransfer("forward_zone_records_from", "forward_zone_records_to");\n} . 
+		 qq{forward.setAutoSort(false);\n} .
+		 qq{forward.setDelimiter("|");\n} .
+		 qq{forward.setStaticOptionRegex("");\n}
+	    ],
 	    -style => { -type => 'text/css', -code => diff_css() },
+	    -style => { -type => 'text/css', -code => select_css() },
+	    -onLoad => ( $w->param( 'phase' ) == 1 ? 'ot.init(document.forms[0])' : 'false' ),
+	    -class => 'yui-skin-sam',
 	);
 
-    Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_bulk-dns-add.cgi' );
+    Whostmgr::HTMLInterface::defheader( '', '', '/cgi/addon_bulk-dns-del.cgi' );
 
     print
 	$w->p( 'phase: ', $w->param( 'phase' ) || '0' ), "\n" if ( DEBUG );
@@ -105,7 +115,8 @@ sub main() {
 
     Whostmgr::HTMLInterface::sendfooter();
 
-    print $w->end_html(), "\n";
+    print
+	$w->end_html(), "\n";
 }
 
 # phase 0: gather initial zone and domain data
@@ -115,12 +126,12 @@ sub getFormData( $ ) {
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
     # for details.
-    if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    if ( DEBUG || Whostmgr::ACLS::checkacl( 'kill-dns' )) {
 	my $ua = LWP::UserAgent->new;
 
 	print
-	    $w->h1( 'Bulk DNS Generator (formerly known as zonemaker)' ), "\n",
-	    $w->p( 'Use this form to generate a set of entries to add to a DNS zone.' );
+	    $w->h1( 'Bulk DNS Removal (zone un-maker)' ), "\n",
+	    $w->p( 'Use this form to mark a set of records for removal from a DNS zone.' );
 
 	##################################################
 	###  get initial pop-up menu data from cPanel  ###
@@ -139,7 +150,7 @@ sub getFormData( $ ) {
 	    # "map/reduce": map() gives an array of domain hashes,
 	    # keys() gives an array of owners, sort(grep()) drops the
 	    # in-addr.arpa zones, the last sort(grep()) gets a list of
-	    # in-addr.arpa zones sorted by address in normal order
+	    # in-addr.arpa zones sorted by IP address in normal order
 	    @domains = map( { $_->{domain} } @{$domains->{data}->{zone}} );
 	    @domains = keys( %{{ map( { $_ => 1 } @domains ) }} );
 	    @forwardDomains = sort( grep( !/(in-addr|ip6)\.arpa/, @domains ));
@@ -154,19 +165,18 @@ sub getFormData( $ ) {
 		    $a[0] <=> $b[0]
 	    } grep( /(in-addr|ip6)\.arpa/, @domains );
 
-	    # prepend placeholders for adding a new domain
-	    unshift( @forwardDomains, ( '' ));
-	    unshift( @inaddrDomains, ( '' ));
 	} else {
-	    @forwardDomains = ( '' );
-	    @inaddrDomains = ( '' );
+	    print
+		$w->p( { -style => 'color:red;' },
+		       'Could not retrieve domain list from cPanel.',
+		       "\n");
 	}
 
 	print
 	    $w->start_form(
-		-name => 'bulk_add',
+		-name => 'bulk_del',
 		-method => 'POST',
-		-action => '/cgi/addon_bulk-dns-add.cgi',
+		-action => '/cgi/addon_bulk-dns-del.cgi',
 	    ), "\n";
 
 	print
@@ -183,33 +193,11 @@ sub getFormData( $ ) {
 				      -id => 'existing_forward_domain',
 				      -name => 'existing_forward_domain',
 				      -values => \@forwardDomains,
-				      -onChange => 'showAddNew(this, "forward_domain_textfield")',
 				  ),
 			      ),
 			      $w->td({ -id => 'info_existing_forward_domain' }, '&nbsp;' ),
 		       ),
 	    ), "\n";
-
-	# hide this <div> at first (style="display: none")
-	# the javascript function showAddNew() makes this visible and invisible
-	print
-	    $w->div({ -id => 'forward_domain_textfield', -style => 'display: none' },
-		    $w->table ({ -border => '0', -id => 't2' },
-			       $w->Tr({ -align => 'left' },
-				      $w->th({ -align => 'right' }, 'New Domain:&nbsp;' ),
-				      $w->td(
-					  $w->textfield(
-					      -id => 'forward_domain',
-					      -name => 'forward_domain',
-					      -size => '32',
-					      -maxlength => '56',
-					      -onChange => 'validateHostName(this, "info_forward_domain", true)'
-					  ),
-				      ),
-				      $w->td({ -id => 'info_forward_domain' }, '&nbsp;' ),
-			       ),
-		    ), "\n"
-	    );
 
 	### in-addr.arpa (reverse) domains
 	print
@@ -217,136 +205,30 @@ sub getFormData( $ ) {
 		-id => 'do_reverse_domain',
 		-name => 'do_reverse_domain',
 		-checked => 0,
-		-label => 'Add reverse domain records',
+		-label => 'Remove reverse domain records',
 		-onClick => 'toggleVisibility(this, "reverse_domain"); toggleVisibility(this, "ipv4network");',
-	    );
+	    ), "\n";
 
 	# hide this <div> at first (style="display: none")
-	# the javascript function showAddNew() makes this visible and invisible
+	# the javascript function showRemove() makes this visible and invisible
 	print
 	    $w->div( { -id => 'reverse_domain', -style => 'display: none' },
-		    $w->table ({ -border => '0', id => 't3' },
-			       $w->Tr({ -align => 'left' },
-				      $w->th({ -align => 'right' }, 'Choose a reverse domain (check to include):&nbsp;' ),
-				      $w->td(
-					  $w->popup_menu(
-					      -id => 'existing_reverse_domain',
-					      -name => 'existing_reverse_domain',
-					      -values => \@inaddrDomains,
-					  ),
-				      ),
-				      $w->td({ -id => 'info_existing_reverse_domain' }, '&nbsp;' ),
-			       ),
-		    ),
-		    "\n",
-		    $w->div({ -id => 'reverse_domain_textfield', -style => 'display: none' },
-			    $w->table ({ -border => '0', -id => 't4' },
-				       $w->Tr({ -align => 'left' },
-					      $w->th({ -align => 'right' }, 'New Reverse Domain:&nbsp;' ),
-					      $w->td(
-						  $w->textfield(
-						      -id => 'reverse_domain',
-						      -name => 'reverse_domain',
-						      -size => '32',
-						      -maxlength => '56',
-						      -onChange => 'validateReverseZone(this, "info_reverse_domain", true)'
-						  ),
-					      ),
-					      $w->td({ -id => 'info_reverse_domain' }, '&nbsp;' ),
+		     $w->table ({ -border => '0', id => 't3' },
+				$w->Tr({ -align => 'left' },
+				       $w->th({ -align => 'right' }, 'Choose a reverse domain (check to include):&nbsp;' ),
+				       $w->td(
+					   $w->popup_menu(
+					       -id => 'existing_reverse_domain',
+					       -name => 'existing_reverse_domain',
+					       -values => \@inaddrDomains,
+					   ),
 				       ),
-			    ), "\n"
-		    )
-	    );
+				       $w->td({ -id => 'info_existing_reverse_domain' }, '&nbsp;' ),
+				),
+		     )), "\n";
 
-	# the base (CIDR /24) address
-	# this block disappears when the user chooses to include a reverse zone
-	print
-	    $w->div( { -id => 'ipv4network', -style => 'display: block' },
-		     $w->table ( { -border => '0' },
-				 $w->Tr({ -align => 'left' },
-					$w->th({ -align => 'right' }, 'Base Address (first three octets):&nbsp;' ),
-					$w->td(
-					    $w->textfield(
-						-id => 'ipv4network',
-						-name => 'ipv4network',
-						-size => 11,
-						-maxlength => 11,
-						-onChange => 'validateBaseAddress(this, "info_ipv4network", true)',
-					    ),
-					),
-					$w->td({ -id => 'info_ipv4network' }, '&nbsp;' ),
-				 ), "\n",
-		     ), "\n",
-	    );
-
-	# fourth octet starting point
 	print
 	    $w->start_table ({ -border => '0' } ),
-	    $w->Tr({ -align => 'left' },
-		   $w->th({ -align => 'right' }, 'Fourth octet start:&nbsp;' ),
-		   $w->td(
-		       $w->textfield(
-			   -id => 'ipv4start',
-			   -name => 'ipv4start',
-			   -size => 3,
-			   -maxlength => 3,
-			   -onchange  => 'validateNumericRange(this, "info_ipv4start", 0, 255, true)',
-		       ),
-		   ),
-		   $w->td({ -id => 'info_ipv4start' }, '&nbsp;' ),
-	    ), "\n";
-
-	# fourth octet ending point
-	print
-	    $w->Tr({ -align => 'left' },
-		   $w->th({ -align => 'right' }, 'Fourth octet end:&nbsp;' ),
-		   $w->td(
-		       $w->textfield(
-			   -id => 'ipv4end',
-			   -name => 'ipv4end',
-			   -size => 3,
-			   -maxlength => 3,
-			   -onchange  => 'validateNumericRange(this, "info_ipv4end", (parseInt(document.forms[0].elements["ipv4start"].value) + 1), 255, true)',
-		       ),
-		   ),
-		   $w->td({ -id => 'info_ipv4end' }, '&nbsp;' ),
-	    ), "\n";
-
-	# base hostname
-	print
-	    $w->Tr({ -align => 'left' },
-		   $w->th({ -align => 'right' }, 'Base hostname:&nbsp;' ),
-		   $w->td(
-		       $w->textfield(
-			   -id => 'hostname_base',
-			   -name => 'hostname_base',
-			   -size => 32,
-			   -maxlength => 64,
-			   -onchange  => 'validateHostName(this, "info_hostname_base", true)',
-		       ),
-		   ),
-		   $w->td({ -id => 'info_hostname_base' }, '&nbsp;' ),
-	    ), "\n";
-
-	# hostname number - this number gets incremented for as many records as they
-	# chose in the fourth octet range
-	# the maximum limit of 999 is arbitrary, but it really cannot be greater than 255, can it?
-	print
-	    $w->Tr({ -align => 'left' },
-		   $w->th({ -align => 'right' }, 'Starting point for hostname increment:&nbsp;' ),
-		   $w->td(
-		       $w->textfield(
-			   -id => 'hostname_offset',
-			   -name => 'hostname_offset',
-			   -size => 3,
-			   -maxlength => 3,
-			   -onchange  => 'validateNumericRange(this, "info_hostname_offset", 0, 999, true)',
-		       ),
-		   ),
-		   $w->td({ -id => 'info_hostname_offset' }, '&nbsp;' ),
-	    ), "\n";
-
-	print
 	    $w->Tr({ -align => 'left' },
 		   $w->th({ -align => 'right' }, 'Comments:&nbsp;', $w->br(), '(comments will be wrapped and set off with ";")' ),
 		   $w->td(
@@ -370,7 +252,7 @@ sub getFormData( $ ) {
 			   -id => 'verbose',
 			   -name => 'verbose',
 			   -value => 'ON',
-			   -label => 'Verbose processing',
+			   -label => 'Verbose processing (AKA "debugging")',
 		       ),
 		   ),
 	    ), "\n";
@@ -398,8 +280,7 @@ sub getFormData( $ ) {
 		-name => 'phase',
 		-value => '1',
 		-default => '1',
-	    ),
-	    "\n";
+	    ), "\n";
 
 	print
 	    $w->end_form(), "\n",
@@ -409,11 +290,12 @@ sub getFormData( $ ) {
     } else {
 
 	print
-	    $w->br(), $w->br(),
+	    $w->br(),
+	    $w->br(),
 	    $w->div({ -align => 'center' },
 		    $w->h1( 'Permission denied' ),
 		    "\n"
-	    );
+	    ), "\n";
 
     }
 }
@@ -425,27 +307,19 @@ sub getConfirmation( $ ) {
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
     # for details.
-    if ( Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    if ( DEBUG || Whostmgr::ACLS::checkacl( 'kill-dns' )) {
 
 	# get all the parameters from the completed form
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
 	my $existing_reverse_domain = $w->param( 'existing_reverse_domain' );
 	my $do_reverse_domain = $w->param( 'do_reverse_domain' );
-	my $ipv4network = $w->param( 'ipv4network' );
-	my $ipv4start = $w->param( 'ipv4start' );
-	my $ipv4end = $w->param( 'ipv4end' );
-	my $hostname_base = $w->param( 'hostname_base' );
-	my $hostname_offset = $w->param( 'hostname_offset' );
 	my $comment = $w->param( 'comment' );
 	my $verbose = $w->param( 'verbose' );
 
+	my $forward_zone = undef;
+	my $reverse_zone = undef;
 	my $forward_domain = undef;
 	my $reverse_domain = undef;
-
-	my @bind = ();
-
-	my $addrCount = $ipv4start;
-	my $hostCount = $hostname_offset;
 
 	my %params = $w->Vars();
 	my $formatString = undef;
@@ -454,71 +328,86 @@ sub getConfirmation( $ ) {
 	my @forward_zones = ();
 	my @reverse_zones = ();
 
+	my $countDomainsA = 0;
+	my $countReverseA = 0;
+	my $countDomainsB = 0;
+	my $countReverseB = 0;
+
 	my $ua = LWP::UserAgent->new;
+
+	$forward_zone = authorizedRequest( $w, $ua, 'dumpzone', ( 'api.version=1', 'domain=' . $existing_forward_domain, ));
 
 	$forward_domain = $existing_forward_domain;
 	if ( $do_reverse_domain ) {
-	    $reverse_domain = $existing_reverse_domain;
-	    $ipv4network = networkAddr( $reverse_domain );
+
+	    $reverse_zone = authorizedRequest( $w, $ua, 'dumpzone', ( 'api.version=1', 'domain=' . $existing_reverse_domain, ));
 	}
 
-	# make the list of IP addresses and hostnames
-	# save the full IP address, the domain, and the numbered hostname
-	# use an array of hashes rather than a big hash so we can preserve the order of entries
-	for ( $addrCount = $ipv4start; $addrCount <= $ipv4end; $addrCount++ ) {
-	    $bind[$addrCount]->{ipv4address} = sprintf( '%s.%d', $ipv4network, $addrCount );
-	    $bind[$addrCount]->{resource} = sprintf( '%s-%d', $hostname_base, $hostCount );
-	    if ( $do_reverse_domain ) {
-		$bind[$addrCount]->{forwardDomain} = $forward_domain;
-	    }
-	    $hostCount++;
-	}
 	if ( DEBUG || $verbose ) {
 	    print
-		$w->div({ -id => 'debugzonerecords' },
-			$w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): @bind is:' ), "\n",
-			$w->pre( Dumper( @bind )), "\n",
-		);
+		$w->start_div( { -id => 'debugzonerecords' } ),
+		$w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): COOKED $forward_zone for ', $existing_forward_domain, ' is:' ), "\n",
+		$w->start_pre(), "\n";
+
+	    for my $record ( @{$forward_zone->{data}->{zone}->[0]->{record}} ) {
+		print
+		    $record->{Line}, ' ',
+		    $record->{type}, ' ',
+		    $record->{ttl}, ' ',
+		    ( $record->{type} eq ':RAW' ? $record->{raw} : '' ), ' ',
+		    ( $record->{type} eq 'A' ? $record->{name} . ': ' . $record->{address} : '' ), ' ',
+		    "\n";
+	    }
+
+	    if ( $do_reverse_domain ) {
+		print
+		    $w->p( 'DEBUG (phase ', $w->param( 'phase' ), '): RAW $reverse_zone ', $existing_reverse_domain, ' is:' ), "\n";
+
+		for my $record ( @{$reverse_zone->{data}->{zone}->[0]->{record}} ) {
+		    print
+			$record->{Line}, ' ',
+			$record->{type}, ' ',
+			$record->{ttl},
+			( $record->{type} eq ':RAW' ? $record->{raw} : '' ), ' ',
+			( $record->{type} eq 'PTR' ? $record->{name} . ': ' . $record->{ptrdname} : '' ), ' ',
+			"\n";
+		}
+	    }
+
+	    print
+		$w->end_pre(), "\n",
+		$w->end_div(), "\n";
 	}
 
 	# strip any hand-entered comment symbols, the default comment, and save the wrapped comment
 	my $default_comment = DEFAULT_COMMENT;
 	$comment =~ s/^$default_comment$//;
 	@comment = split( ' ', $comment );
-	push ( @forward_zones, ( wrap( '; ', '; ', grep( !/^;$/, @comment )), "\n" ));
+	push ( @forward_zones, ( wrap( '; ', '; ', grep( !/^;$/, @comment )), "\n" )) if ( @comment );
 
+	for my $record ( @{$forward_zone->{data}->{zone}->[0]->{record}} ) {
+	    next if ( $record->{type} =~ /^(mx|ns|:raw|soa|\$ttl)$/i );
 
-	$formatString = '%-' . length( $hostname_base . '-xxx.' ) . "s\tIN\t%s\t%s\n";
-
-	# build an array of strings to be searched for in the zone files.
-	foreach my $record ( @bind ) {
-	    next unless ( $record->{ipv4address} );
-
-	    push( @forward_zones,
-		  sprintf( $formatString,
-			   $record->{resource},
-			   'A',
-			   $record->{ipv4address}
-		  )
+	    my $line = sprintf( "%-32s\t%-4s\t%52s",
+				$record->{name},
+				$record->{type},
+				( $record->{type} eq 'CNAME' ? $record->{cname} : $record->{address} )
 		);
+				
+	    push( @forward_zones, $line );
 	}
 
-	# do the same for the in-addr.arpa zones.
 	if ( $do_reverse_domain ) {
-	    push ( @reverse_zones, ( wrap( '; ', '; ', grep( !/^;$/, @comment )), "\n" ));
+	    for my $record ( @{$reverse_zone->{data}->{zone}->[0]->{record}} ) {
+		next if ( $record->{type} =~ /^(mx|ns|:raw|soa|\$ttl)$/i );
 
-	    $formatString = "%-3d\tIN\t%s\t%s.$forward_domain.\n";
-
-	    for ( my $r = 0; $r <= $#bind; $r++ ) {
-		my $record = $bind[$r];
-		next unless ( $record->{ipv4address} );
-		push( @reverse_zones,
-		      sprintf( $formatString,
-			       $r,
-			       'PTR',
-			       $record->{resource}
-		      )
+		my $line = sprintf( "%-32s\t%-4s\t%52s",
+				    $record->{name},
+				    $record->{type},
+				    ( $record->{type} eq 'CNAME' ? $record->{cname} : $record->{address} )
 		    );
+
+		push( @reverse_zones, $line );
 	    }
 	}
 
@@ -527,33 +416,82 @@ sub getConfirmation( $ ) {
 	    $w->start_form(
 		-name => 'review_changes',
 		-method => 'POST',
-		-action => '/cgi/addon_bulk-dns-add.cgi',
+		-action => '/cgi/addon_bulk-dns-del.cgi',
 	    ), "\n";
+
 	print
 	    $w->p( 'Forward zone data:' ),
-	    $w->textarea(
-		{
-		    -id => 'forward_zone_records',
-		    -name => 'forward_zone_records',
-		    -rows => $#forward_zones + 1,
-		    -columns => 80,
-		    -default => join( '', @forward_zones ),
-		},
+	    $w->table( { -border => '0' }, "\n",
+		       $w->Tr(
+			   $w->td(
+			       $w->scrolling_list(
+				   {
+				       -id => 'forward_zone_records_from',
+				       -name => 'forward_zone_records_from',
+				       -size => ( $#forward_zones > 51 ? 51 : $#forward_zones + 1 ),
+				       -multiple => 'true',
+				       -onDblClick => 'opt.transferRight()',
+				       -values => [ map { $countDomainsA++ } @forward_zones ],
+				       -labels => { map { $countDomainsB++ => $_ } @forward_zones }
+				   },
+			       )), "\n",
+			   $w->td( { -valign => 'bottom', -align => 'center' },
+				   $w->button( -name => 'right', -value => '>>', -onClick => 'opt.transferRight()' ), br, br, "\n",
+				   $w->button( -name => 'right', -value => 'All >>', -onClick => 'opt.transferAllRight()' ), br, br, "\n",
+				   $w->button( -name => 'left', -value => '<<', -onClick => 'opt.transferLeft()' ), br, br, "\n",
+				   $w->button( -name => 'left', -value => 'All <<', -onClick => 'opt.transferAllLeft()' ), "\n"
+			   ), "\n",
+			   $w->td(
+			       $w->scrolling_list(
+				   {
+				       -id => 'forward_zone_records_to',
+				       -name => 'forward_zone_records_to',
+				       -size => ( $#forward_zones > 51 ? 51 : $#forward_zones + 1 ),
+				       -multiple => 'true',
+				   }), "\n"
+			   )), "\n",
 	    ), "\n";
 
 	if ( $do_reverse_domain ) {
 	    print
 		$w->p( 'Reverse zone data:' ),
-		$w->textarea(
+		$w->scrolling_list(
 		    {
-			-id => 'reverse_zone_records',
-			-name => 'reverse_zone_records',
-			-rows => $#reverse_zones + 1,
-			-columns => 80,
-			-default => join( '', @reverse_zones ),
+			-id => 'reverse_zone_records_from',
+			-name => 'reverse_zone_records_from',
+			-size => $#reverse_zones + 1,
+			-multiple => 'true',
+			-values => [ map { $countReverseA++ } @reverse_zones ],
+			-labels => { map { $countReverseB++ => $_ } @reverse_zones }
 		    },
-		), "\n";
+		), "\n",
+	        $w->scrolling_list(
+		    {
+		        -id => 'reverse_zone_records_to',
+		        -name => 'reverse_zone_records_to',
+		        -size => $#reverse_zones + 1,
+			-multiple => 'true',
+		    }), "\n";
 	}
+
+	print
+	    $w->br(),
+	    $w->script( { -type => 'text/javascript' },
+			q{createMovableOptions( "forward_zone_records_from", "forward_zone_records_to", 1024, 680, 'Available Records', 'Selected Records');},
+			q{// ADDING ACTIONS INTO YOUR PAGE},
+			q{// Finally, add calls to the object to move options back and forth, either},
+			q{// from links in your page or from double-clicking the options themselves.},
+			q{// See example page, and use the following methods:},
+			q{ot.transferRight();},
+			q{ot.transferAllRight();},
+			q{ot.transferLeft();},
+			q{ot.transferAllLeft();},
+	    ), "\n";
+
+	print
+	    $w->script( { -type => 'text/javascript' },
+			q{createMovableOptions( "reverse_zone_records_from", "reverse_zone_records_to", 1024, 680, 'Available Records', 'Selected Records');},
+	    ), "\n" if ( $do_reverse_domain );
 
 	# save the parameters from the previous form for the next phase
 	foreach my $p ( sort( keys( %params ))) {
@@ -566,12 +504,11 @@ sub getConfirmation( $ ) {
 	}
 
 	print
-	    $w->br(),
 	    $w->submit(
 		-name => 'submit',
 		-label => 'Ready'
 	    ), "\n";
-
+	
 	$w->param( -name => 'phase', -value => '2' );
 
 	print
@@ -609,7 +546,7 @@ sub processFormData( $ ) {
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
     # for details.
-    if ( DEBUG || Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    if ( DEBUG || Whostmgr::ACLS::checkacl( 'kill-dns' )) {
 
 	# get all the parameters from the completed form
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
@@ -672,7 +609,7 @@ sub processFormData( $ ) {
 	    start_form(
 		-name => 'commit_changes',
 		-method => 'POST',
-		-action => '/cgi/addon_bulk-dns-add.cgi',
+		-action => '/cgi/addon_bulk-dns-del.cgi',
 	    ), "\n";
 
 	# save the parameters from the previous form for the next phase
@@ -724,7 +661,7 @@ sub commitChanges( $ ) {
     # Ensure they have proper access before doing anything else. See
     # http://docs.cpanel.net/twiki/bin/view/SoftwareDevelopmentKit/CreatingWhmPlugins#Access%20Control
     # for details.
-    if ( DEBUG || Whostmgr::ACLS::checkacl( 'create-dns' )) {
+    if ( DEBUG || Whostmgr::ACLS::checkacl( 'kill-dns' )) {
 
 	# get all the parameters from the completed form
 	my $existing_forward_domain = $w->param( 'existing_forward_domain' );
@@ -1005,6 +942,7 @@ sub addOrReplace( $$$$ ) {
 
     my @newContents = @$oldContents;
     my $successExpr = qr/^1$/;
+    my $searchExpr = undef;
 
     foreach my $line ( @$newLines ) {
 
@@ -1030,7 +968,7 @@ sub addOrReplace( $$$$ ) {
 	    # $5 - type (A, PTR, etc)
 	    # $6 - fqdn (resource name), what we replace
 	    #                      host       TTL          class     type  resource name
-	    my $searchExpr = qr/^($hostName)(\s+(\d+))*\s+($class)\s+(ptr)\s+(.*)\s*$/i;
+	    $searchExpr = qr/^($hostName)(\s+(\d+))*\s+($class)\s+(ptr)\s+(.*)\s*$/i;
 
 	    @result = map( { s/$searchExpr/$1$2\t$4\t$5\t$resourceName/; } @newContents );
 
@@ -1055,7 +993,7 @@ sub addOrReplace( $$$$ ) {
 	    # $6 - type (A, PTR, etc)
 	    # $7 - IP address (resource name), what we search for
 	    #                      host       TTL          class    type  resource name
-	    my $searchExpr = qr/^(([^;\s])+)(\s+(\d+))*\s+($class)\s+(a)\s+($resourceName)\s*$/i;
+	    $searchExpr = qr/^(([^;\s])+)(\s+(\d+))*\s+($class)\s+(a)\s+($resourceName)\s*$/i;
 
 	    @result = map( s/$searchExpr/$hostName$3\t$5\t$6\t$7/, @newContents );
 
@@ -1184,11 +1122,34 @@ sub pushChanges( $@ ) {
     $returnValue;
 }
 
+sub select_css () {
+    my $style = "
+        .multipleSelectBoxControl span{ /* Labels above select boxes*/
+                font-family:arial;
+                font-size:11px;
+                font-weight:bold;
+        }
+        .multipleSelectBoxControl div select{   /* Select box layout */
+                font-family:arial;
+                height:100%;
+        }
+        .multipleSelectBoxControl input{        /* Small butons */
+                width:25px;     
+        }
+        .multipleSelectBoxControl div{
+                float:left;
+        }
+        .multipleSelectBoxDiv
+";
+
+    $style;
+}
+
 =pod
 
 =head1 NAME
 
-addon_bulk-dns-add.cgi
+addon_bulk-dns-del.cgi
 
 =head1 SYNOPSIS
 
@@ -1196,13 +1157,13 @@ Generate a list of hostnames and IP addresses in BIND zone file format. Then upd
 
 =head1 DESCRIPTION
 
-addon_bulk-dns-add.cgi presents a form to the user to enter zone details including a hostname "template" (consisting of a prefix and a starting number), a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of generating the zone lines. It calls itself again presenting the user with a colored difference listing between the exisiing zone file and what will replace it. In the last step, the user may commit the zone file. The file is then distributed to the other DNS servers in the cluster using the I</scripts/dnscluster> command.
+addon_bulk-dns-del.cgi presents a form to the user for removing a zone from cPanel DNS. The form collects information about zone details including a hostname "template" (consisting of a prefix and a starting number), a starting IP address, and an ending IP address. After validating the entries, this script calls itself as the form processor to perform the actual work of deleting the relevant zone file lines. It calls itself again presenting the user with a colored difference listing between the exisiing zone file and what will replace it. In the last step, the user may commit the changes to the zone file. The file is then distributed to the other DNS servers in the cluster using the I</scripts/dnscluster> command.
 
 =head1 FILES
 
 =over 8
 
-=item I</usr/local/cpanel/whostmgr/docroot/cgi/addon_bulk-dns-add.cgi> - the CGI script
+=item I</usr/local/cpanel/whostmgr/docroot/cgi/addon_bulk-dns-del.cgi> - the CGI script
 
 =head1 SEE ALSO
 
@@ -1361,7 +1322,7 @@ function validateIPv4 (valfield,   // element to be validated
 	    return false;
 	}
 
-	for ( var i=0; i < parts.length; i++ ) {
+	for ( var i = 0; i < parts.length; i++ ) {
 	    if ( parseInt(parseFloat( parts[i] )) > 255) {
 		msg (infofield, "error", "ERROR: not a valid IPv4 address (255?)");
 		setfocus(valfield);
@@ -1460,7 +1421,7 @@ function validateBaseAddress (valfield,   // element to be validated
 	    return false;
 	}
 
-	for ( var i=0; i < parts.length; i++ ) {
+	for ( var i = 0; i < parts.length; i++ ) {
 	    if ( parseInt(parseFloat( parts[i] )) > 255) {
 		msg (infofield, "error", "ERROR: not a valid IPv4 octet (255?)");
 		setfocus(valfield);
@@ -1559,4 +1520,549 @@ function toggleVisibility ( valfield, divName )
     }
 
 }
+
+// ===================================================================
+// Author: Matt Kruse <matt@mattkruse.com>
+// WWW: http://www.mattkruse.com/
+//
+// NOTICE: You may use this code for any purpose, commercial or
+// private, without any further permission from the author. You may
+// remove this notice from your final code if you wish, however it is
+// appreciated by the author if at least my web site address is kept.
+//
+// You may *NOT* re-distribute this code in any way except through its
+// use. That means, you can include it in your product, or your web
+// site, or any other form where the code is actually being used. You
+// may not put the plain javascript up on your site for download or
+// include it in your javascript libraries for download.
+// If you wish to share this code with others, please just point them
+// to the URL instead.
+// Please DO NOT link directly to my .js files from your site. Copy
+// the files to your server and use them there. Thank you.
+// ===================================================================
+
+// HISTORY
+// ------------------------------------------------------------------
+// April 20, 2005: Fixed the removeSelectedOptions() function to
+//                 correctly handle single selects
+// June 12, 2003: Modified up and down functions to support more than
+//                one selected option
+/*
+DESCRIPTION: These are general functions to deal with and manipulate
+select boxes. Also see the OptionTransfer library to more easily
+handle transferring options between two lists
+
+COMPATABILITY: These are fairly basic functions - they should work on
+all browsers that support Javascript.
+*/
+
+
+// -------------------------------------------------------------------
+// hasOptions(obj)
+//  Utility function to determine if a select object has an options array
+// -------------------------------------------------------------------
+function hasOptions(obj) {
+    if (obj!=null && obj.options!=null) { return true; }
+    return false;
+}
+
+// -------------------------------------------------------------------
+// selectUnselectMatchingOptions(select_object,regex,select/unselect,true/false)
+//  This is a general function used by the select functions below, to
+//  avoid code duplication
+// -------------------------------------------------------------------
+function selectUnselectMatchingOptions(obj,regex,which,only) {
+    if (window.RegExp) {
+	if (which == "select") {
+	    var selected1=true;
+	    var selected2=false;
+	}
+	else if (which == "unselect") {
+	    var selected1=false;
+	    var selected2=true;
+	}
+	else {
+	    return;
+	}
+	var re = new RegExp(regex);
+	if (!hasOptions(obj)) { return; }
+	for (var i=0; i<obj.options.length; i++) {
+	    if (re.test(obj.options[i].text)) {
+		obj.options[i].selected = selected1;
+	    }
+	    else {
+		if (only == true) {
+		    obj.options[i].selected = selected2;
+		}
+	    }
+	}
+    }
+}
+
+// -------------------------------------------------------------------
+// selectMatchingOptions(select_object,regex)
+//  This function selects all options that match the regular expression
+//  passed in. Currently-selected options will not be changed.
+// -------------------------------------------------------------------
+function selectMatchingOptions(obj,regex) {
+    selectUnselectMatchingOptions(obj,regex,"select",false);
+}
+
+// -------------------------------------------------------------------
+// selectOnlyMatchingOptions(select_object,regex)
+//  This function selects all options that match the regular expression
+//  passed in. Selected options that don't match will be un-selected.
+// -------------------------------------------------------------------
+function selectOnlyMatchingOptions(obj,regex) {
+    selectUnselectMatchingOptions(obj,regex,"select",true);
+}
+
+// -------------------------------------------------------------------
+// unSelectMatchingOptions(select_object,regex)
+//  This function Unselects all options that match the regular expression
+//  passed in.
+// -------------------------------------------------------------------
+function unSelectMatchingOptions(obj,regex) {
+    selectUnselectMatchingOptions(obj,regex,"unselect",false);
+}
+	
+// -------------------------------------------------------------------
+// sortSelect(select_object)
+//   Pass this function a SELECT object and the options will be sorted
+//   by their text (display) values
+// -------------------------------------------------------------------
+function sortSelect(obj) {
+    var o = new Array();
+    if (!hasOptions(obj)) { return; }
+    for (var i=0; i<obj.options.length; i++) {
+	o[o.length] = new Option( obj.options[i].text, obj.options[i].value, obj.options[i].defaultSelected, obj.options[i].selected) ;
+    }
+    if (o.length==0) { return; }
+    o = o.sort(
+	function(a,b) {
+	    if ((a.text+"") < (b.text+"")) { return -1; }
+	    if ((a.text+"") > (b.text+"")) { return 1; }
+	    return 0;
+	}
+    );
+
+    for (var i=0; i<o.length; i++) {
+	obj.options[i] = new Option(o[i].text, o[i].value, o[i].defaultSelected, o[i].selected);
+    }
+}
+
+// -------------------------------------------------------------------
+// selectAllOptions(select_object)
+//  This function takes a select box and selects all options (in a
+//  multiple select object). This is used when passing values between
+//  two select boxes. Select all options in the right box before
+//  submitting the form so the values will be sent to the server.
+// -------------------------------------------------------------------
+function selectAllOptions(obj) {
+    if (!hasOptions(obj)) { return; }
+    for (var i=0; i<obj.options.length; i++) {
+	obj.options[i].selected = true;
+    }
+}
+	
+// -------------------------------------------------------------------
+// moveSelectedOptions(select_object,select_object[,autosort(true/false)[,regex]])
+//  This function moves options between select boxes. Works best with
+//  multi-select boxes to create the common Windows control effect.
+//  Passes all selected values from the first object to the second
+//  object and re-sorts each box.
+//  If a third argument of 'false' is passed, then the lists are not
+//  sorted after the move.
+//  If a fourth string argument is passed, this will function as a
+//  Regular Expression to match against the TEXT or the options. If
+//  the text of an option matches the pattern, it will NOT be moved.
+//  It will be treated as an unmoveable option.
+//  You can also put this into the <SELECT> object as follows:
+//    onDblClick="moveSelectedOptions(this,this.form.target)
+//  This way, when the user double-clicks on a value in one box, it
+//  will be transferred to the other (in browsers that support the
+//  onDblClick() event handler).
+// -------------------------------------------------------------------
+function moveSelectedOptions(from,to) {
+    // Unselect matching options, if required
+    if (arguments.length>3) {
+	var regex = arguments[3];
+	if (regex != "") {
+	    unSelectMatchingOptions(from,regex);
+	}
+    }
+    // Move them over
+    if (!hasOptions(from)) { return; }
+    for (var i=0; i<from.options.length; i++) {
+	var o = from.options[i];
+	if (o.selected) {
+	    if (!hasOptions(to)) { var index = 0; } else { var index=to.options.length; }
+	    to.options[index] = new Option( o.text, o.value, false, false);
+	}
+    }
+    // Delete them from original
+    for (var i=(from.options.length-1); i>=0; i--) {
+	var o = from.options[i];
+	if (o.selected) {
+	    from.options[i] = null;
+	}
+    }
+    if ((arguments.length<3) || (arguments[2]==true)) {
+	sortSelect(from);
+	sortSelect(to);
+    }
+    from.selectedIndex = -1;
+    to.selectedIndex = -1;
+}
+
+// -------------------------------------------------------------------
+// copySelectedOptions(select_object,select_object[,autosort(true/false)])
+//  This function copies options between select boxes instead of
+//  moving items. Duplicates in the target list are not allowed.
+// -------------------------------------------------------------------
+function copySelectedOptions(from,to) {
+    var options = new Object();
+    if (hasOptions(to)) {
+	for (var i=0; i<to.options.length; i++) {
+	    options[to.options[i].value] = to.options[i].text;
+	}
+    }
+    if (!hasOptions(from)) { return; }
+    for (var i=0; i<from.options.length; i++) {
+	var o = from.options[i];
+	if (o.selected) {
+	    if (options[o.value] == null || options[o.value] == "undefined" || options[o.value]!=o.text) {
+		if (!hasOptions(to)) { var index = 0; } else { var index=to.options.length; }
+		to.options[index] = new Option( o.text, o.value, false, false);
+	    }
+	}
+    }
+    if ((arguments.length<3) || (arguments[2]==true)) {
+	sortSelect(to);
+    }
+    from.selectedIndex = -1;
+    to.selectedIndex = -1;
+}
+
+// -------------------------------------------------------------------
+// moveAllOptions(select_object,select_object[,autosort(true/false)[,regex]])
+//  Move all options from one select box to another.
+// -------------------------------------------------------------------
+function moveAllOptions(from,to) {
+    selectAllOptions(from);
+    if (arguments.length==2) {
+	moveSelectedOptions(from,to);
+    }
+    else if (arguments.length==3) {
+	moveSelectedOptions(from,to,arguments[2]);
+    }
+    else if (arguments.length==4) {
+	moveSelectedOptions(from,to,arguments[2],arguments[3]);
+    }
+}
+
+// -------------------------------------------------------------------
+// copyAllOptions(select_object,select_object[,autosort(true/false)])
+//  Copy all options from one select box to another, instead of
+//  removing items. Duplicates in the target list are not allowed.
+// -------------------------------------------------------------------
+function copyAllOptions(from,to) {
+    selectAllOptions(from);
+    if (arguments.length==2) {
+	copySelectedOptions(from,to);
+    }
+    else if (arguments.length==3) {
+	copySelectedOptions(from,to,arguments[2]);
+    }
+}
+
+// -------------------------------------------------------------------
+// swapOptions(select_object,option1,option2)
+//  Swap positions of two options in a select list
+// -------------------------------------------------------------------
+function swapOptions(obj,i,j) {
+    var o = obj.options;
+    var i_selected = o[i].selected;
+    var j_selected = o[j].selected;
+    var temp = new Option(o[i].text, o[i].value, o[i].defaultSelected, o[i].selected);
+    var temp2= new Option(o[j].text, o[j].value, o[j].defaultSelected, o[j].selected);
+    o[i] = temp2;
+    o[j] = temp;
+    o[i].selected = j_selected;
+    o[j].selected = i_selected;
+}
+	
+// -------------------------------------------------------------------
+// moveOptionUp(select_object)
+//  Move selected option in a select list up one
+// -------------------------------------------------------------------
+function moveOptionUp(obj) {
+    if (!hasOptions(obj)) { return; }
+    for (i=0; i<obj.options.length; i++) {
+	if (obj.options[i].selected) {
+	    if (i != 0 && !obj.options[i-1].selected) {
+		swapOptions(obj,i,i-1);
+		obj.options[i-1].selected = true;
+	    }
+	}
+    }
+}
+
+// -------------------------------------------------------------------
+// moveOptionDown(select_object)
+//  Move selected option in a select list down one
+// -------------------------------------------------------------------
+function moveOptionDown(obj) {
+    if (!hasOptions(obj)) { return; }
+    for (i=obj.options.length-1; i>=0; i--) {
+	if (obj.options[i].selected) {
+	    if (i != (obj.options.length-1) && ! obj.options[i+1].selected) {
+		swapOptions(obj,i,i+1);
+		obj.options[i+1].selected = true;
+	    }
+	}
+    }
+}
+
+// -------------------------------------------------------------------
+// removeSelectedOptions(select_object)
+//  Remove all selected options from a list
+//  (Thanks to Gene Ninestein)
+// -------------------------------------------------------------------
+function removeSelectedOptions(from) {
+    if (!hasOptions(from)) { return; }
+    if (from.type=="select-one") {
+	from.options[from.selectedIndex] = null;
+    }
+    else {
+	for (var i=(from.options.length-1); i>=0; i--) {
+	    var o=from.options[i];
+	    if (o.selected) {
+		from.options[i] = null;
+	    }
+	}
+    }
+    from.selectedIndex = -1;
+}
+
+// -------------------------------------------------------------------
+// removeAllOptions(select_object)
+//  Remove all options from a list
+// -------------------------------------------------------------------
+function removeAllOptions(from) {
+    if (!hasOptions(from)) { return; }
+    for (var i=(from.options.length-1); i>=0; i--) {
+	from.options[i] = null;
+    }
+    from.selectedIndex = -1;
+}
+
+// -------------------------------------------------------------------
+// addOption(select_object,display_text,value,selected)
+//  Add an option to a list
+// -------------------------------------------------------------------
+function addOption(obj,text,value,selected) {
+    if (obj!=null && obj.options!=null) {
+	obj.options[obj.options.length] = new Option(text, value, false, selected);
+    }
+}
+
+// ===================================================================
+// Author: Matt Kruse <matt@mattkruse.com>
+// WWW: http://www.mattkruse.com/
+//
+// NOTICE: You may use this code for any purpose, commercial or
+// private, without any further permission from the author. You may
+// remove this notice from your final code if you wish, however it is
+// appreciated by the author if at least my web site address is kept.
+//
+// You may *NOT* re-distribute this code in any way except through its
+// use. That means, you can include it in your product, or your web
+// site, or any other form where the code is actually being used. You
+// may not put the plain javascript up on your site for download or
+// include it in your javascript libraries for download.
+// If you wish to share this code with others, please just point them
+// to the URL instead.
+// Please DO NOT link directly to my .js files from your site. Copy
+// the files to your server and use them there. Thank you.
+// ===================================================================
+
+/*
+OptionTransfer.js
+Last Modified: 7/12/2004
+
+DESCRIPTION: This widget is used to easily and quickly create an interface
+where the user can transfer choices from one select box to another. For
+example, when selecting which columns to show or hide in search results.
+This object adds value by automatically storing the values that were added
+or removed from each list, as well as the state of the final list.
+
+COMPATABILITY: Should work on all Javascript-compliant browsers.
+
+USAGE:
+// Create a new OptionTransfer object. Pass it the field names of the left
+// select box and the right select box.
+var ot = new OptionTransfer("from","to");
+
+// Optionally tell the lists whether or not to auto-sort when options are
+// moved. By default, the lists will be sorted.
+ot.setAutoSort(true);
+
+// Optionally set the delimiter to be used to separate values that are
+// stored in hidden fields for the added and removed options, as well as
+// final state of the lists. Defaults to a comma.
+ot.setDelimiter("|");
+
+// You can set a regular expression for option texts which are _not_ allowed to
+// be transferred in either direction
+ot.setStaticOptionRegex("static");
+
+// These functions assign the form fields which will store the state of
+// the lists. Each one is optional, so you can pick to only store the
+// new options which were transferred to the right list, for example.
+// Each function takes the name of a HIDDEN or TEXT input field.
+
+// Store list of options removed from left list into an input field
+ot.saveRemovedLeftOptions("removedLeft");
+// Store list of options removed from right list into an input field
+ot.saveRemovedRightOptions("removedRight");
+// Store list of options added to left list into an input field
+ot.saveAddedLeftOptions("addedLeft");
+// Store list of options radded to right list into an input field
+ot.saveAddedRightOptions("addedRight");
+// Store all options existing in the left list into an input field
+ot.saveNewLeftOptions("newLeft");
+// Store all options existing in the right list into an input field
+ot.saveNewRightOptions("newRight");
+
+// IMPORTANT: This step is required for the OptionTransfer object to work
+// correctly.
+// Add a call to the BODY onLoad="" tag of the page, and pass a reference to
+// the form which contains the select boxes and input fields.
+BODY onLoad="ot.init(document.forms[0])"
+
+// ADDING ACTIONS INTO YOUR PAGE
+// Finally, add calls to the object to move options back and forth, either
+// from links in your page or from double-clicking the options themselves.
+// See example page, and use the following methods:
+ot.transferRight();
+ot.transferAllRight();
+ot.transferLeft();
+ot.transferAllLeft();
+
+
+NOTES:
+1) Requires the functions in selectbox.js
+
+*/
+
+var ot = new OptionTransfer("from","to");
+
+function OT_transferLeft() { moveSelectedOptions(this.right,this.left,this.autoSort,this.staticOptionRegex); this.update(); }
+function OT_transferRight() { moveSelectedOptions(this.left,this.right,this.autoSort,this.staticOptionRegex); this.update(); }
+function OT_transferAllLeft() { moveAllOptions(this.right,this.left,this.autoSort,this.staticOptionRegex); this.update(); }
+function OT_transferAllRight() { moveAllOptions(this.left,this.right,this.autoSort,this.staticOptionRegex); this.update(); }
+function OT_saveRemovedLeftOptions(f) { this.removedLeftField = f; }
+function OT_saveRemovedRightOptions(f) { this.removedRightField = f; }
+function OT_saveAddedLeftOptions(f) { this.addedLeftField = f; }
+function OT_saveAddedRightOptions(f) { this.addedRightField = f; }
+function OT_saveNewLeftOptions(f) { this.newLeftField = f; }
+function OT_saveNewRightOptions(f) { this.newRightField = f; }
+function OT_update() {
+    var removedLeft = new Object();
+    var removedRight = new Object();
+    var addedLeft = new Object();
+    var addedRight = new Object();
+    var newLeft = new Object();
+    var newRight = new Object();
+    for (var i=0;i<this.left.options.length;i++) {
+	var o=this.left.options[i];
+	newLeft[o.value]=1;
+	if (typeof(this.originalLeftValues[o.value])=="undefined") {
+	    addedLeft[o.value]=1;
+	    removedRight[o.value]=1;
+	}
+    }
+    for (var i=0;i<this.right.options.length;i++) {
+	var o=this.right.options[i];
+	newRight[o.value]=1;
+	if (typeof(this.originalRightValues[o.value])=="undefined") {
+	    addedRight[o.value]=1;
+	    removedLeft[o.value]=1;
+	}
+    }
+    if (this.removedLeftField!=null) { this.removedLeftField.value = OT_join(removedLeft,this.delimiter); }
+    if (this.removedRightField!=null) { this.removedRightField.value = OT_join(removedRight,this.delimiter); }
+    if (this.addedLeftField!=null) { this.addedLeftField.value = OT_join(addedLeft,this.delimiter); }
+    if (this.addedRightField!=null) { this.addedRightField.value = OT_join(addedRight,this.delimiter); }
+    if (this.newLeftField!=null) { this.newLeftField.value = OT_join(newLeft,this.delimiter); }
+    if (this.newRightField!=null) { this.newRightField.value = OT_join(newRight,this.delimiter); }
+}
+function OT_join(o,delimiter) {
+    var val; var str="";
+    for(val in o){
+	if (str.length>0) { str=str+delimiter; }
+	str=str+val;
+    }
+    return str;
+}
+function OT_setDelimiter(val) { this.delimiter=val; }
+function OT_setAutoSort(val) { this.autoSort=val; }
+function OT_setStaticOptionRegex(val) { this.staticOptionRegex=val; }
+function OT_init(theform) {
+    this.form = theform;
+    if(!theform[this.left]){alert("OptionTransfer init(): Left select list does not exist in form!");return false;}
+    if(!theform[this.right]){alert("OptionTransfer init(): Right select list does not exist in form!");return false;}
+    this.left=theform[this.left];
+    this.right=theform[this.right];
+    for(var i=0;i<this.left.options.length;i++) {
+	this.originalLeftValues[this.left.options[i].value]=1;
+    }
+    for(var i=0;i<this.right.options.length;i++) {
+	this.originalRightValues[this.right.options[i].value]=1;
+    }
+    if(this.removedLeftField!=null) { this.removedLeftField=theform[this.removedLeftField]; }
+    if(this.removedRightField!=null) { this.removedRightField=theform[this.removedRightField]; }
+    if(this.addedLeftField!=null) { this.addedLeftField=theform[this.addedLeftField]; }
+    if(this.addedRightField!=null) { this.addedRightField=theform[this.addedRightField]; }
+    if(this.newLeftField!=null) { this.newLeftField=theform[this.newLeftField]; }
+    if(this.newRightField!=null) { this.newRightField=theform[this.newRightField]; }
+    this.update();
+}
+// -------------------------------------------------------------------
+// OptionTransfer()
+//  This is the object interface.
+// -------------------------------------------------------------------
+function OptionTransfer(l,r) {
+    this.form = null;
+    this.left=l;
+    this.right=r;
+    this.autoSort=true;
+    this.delimiter=",";
+    this.staticOptionRegex = "";
+    this.originalLeftValues = new Object();
+    this.originalRightValues = new Object();
+    this.removedLeftField = null;
+    this.removedRightField = null;
+    this.addedLeftField = null;
+    this.addedRightField = null;
+    this.newLeftField = null;
+    this.newRightField = null;
+    this.transferLeft=OT_transferLeft;
+    this.transferRight=OT_transferRight;
+    this.transferAllLeft=OT_transferAllLeft;
+    this.transferAllRight=OT_transferAllRight;
+    this.saveRemovedLeftOptions=OT_saveRemovedLeftOptions;
+    this.saveRemovedRightOptions=OT_saveRemovedRightOptions;
+    this.saveAddedLeftOptions=OT_saveAddedLeftOptions;
+    this.saveAddedRightOptions=OT_saveAddedRightOptions;
+    this.saveNewLeftOptions=OT_saveNewLeftOptions;
+    this.saveNewRightOptions=OT_saveNewRightOptions;
+    this.setDelimiter=OT_setDelimiter;
+    this.setAutoSort=OT_setAutoSort;
+    this.setStaticOptionRegex=OT_setStaticOptionRegex;
+    this.init=OT_init;
+    this.update=OT_update;
+}
+
 // }
