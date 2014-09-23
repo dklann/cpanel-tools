@@ -49,7 +49,7 @@ use Net::IP qw(:PROC);
 use constant DEBUG  => 1;
 use constant MWT_CPANEL => 0;	# oh this is painful
 
-use constant BASE_URL => 'http://localhost:2086/json-api';
+use constant BASE_URL => q{http://localhost:2086} . ( $ENV{'cp_security_token'} || '' ) . q{/json-api};
 use constant NAMEDIR => '/var/named';
 use constant DEFAULT_COMMENT => 'Comments for this block of addresses. This will be placed above the block of addresses.';
 use constant SUFFIX => '.NEW';
