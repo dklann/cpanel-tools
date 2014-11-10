@@ -46,7 +46,7 @@ use Text::Diff::FormattedHTML;
 use File::stat;
 use Net::IP qw(:PROC);
 
-use constant DEBUG  => 1;
+use constant DEBUG => 1;
 use constant MWT_CPANEL => 0;	# oh this is painful
 
 use constant BASE_URL => q{http://localhost:2086} . ( $ENV{'cp_security_token'} || '' ) . q{/json-api};
@@ -169,7 +169,7 @@ sub getFormData( $ ) {
 	    $w->start_form(
 		-name => 'bulk_add',
 		-method => 'POST',
-		-action => '/cgi/addon_bulk-dns-add.cgi',
+		-action => ( $ENV{'cp_security_token'} || '' ) . '/cgi/addon_bulk-dns-add.cgi',
 	    ), "\n";
 
 	print
@@ -618,7 +618,7 @@ sub getConfirmation( $ ) {
 	    $w->start_form(
 		-name => 'review_changes',
 		-method => 'POST',
-		-action => '/cgi/addon_bulk-dns-add.cgi',
+		-action => ( $ENV{'cp_security_token'} || '' ) . '/cgi/addon_bulk-dns-add.cgi',
 	    ), "\n";
 	print
 	    $w->p( 'Forward zone data:' ),
@@ -763,7 +763,7 @@ sub processFormData( $ ) {
 	    start_form(
 		-name => 'commit_changes',
 		-method => 'POST',
-		-action => '/cgi/addon_bulk-dns-add.cgi',
+		-action => ( $ENV{'cp_security_token'} || '' ) . '/cgi/addon_bulk-dns-add.cgi',
 	    ), "\n";
 
 	# save the parameters from the previous form for the next phase
